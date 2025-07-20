@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 
 from utils import *
 from loader import EEGDataLoader
-# from models.protop import ProtoPNet
-from models.protop_fusion import ProtoPNet
+from models.protop import ProtoPNet
+# from models.protop_fusion import ProtoPNet
 import torch.nn.functional as F
 
 
@@ -163,6 +163,7 @@ class OneFoldTrainer:
                 self.loss_ensemble['identity_loss'] +
                 self.loss_ensemble['weight_loss'])
 
+
     def interpret_loss(self, outputs, labels):
         # 1) CE
         loss_ce = self.criterion(outputs, labels)
@@ -257,12 +258,12 @@ class OneFoldTrainer:
 
             if self.cfg['backbone']['name'] != 'ProtoP':
                 for j in range(len(outputs)):
-                    # loss += self.protop_loss(outputs[j], labels)
-                    loss += self.protop_cam_loss(outputs[j], labels)
+                    loss += self.protop_loss(outputs[j], labels)
+                    # loss += self.protop_cam_loss(outputs[j], labels)
                     outputs_sum += outputs[j]
             else:
-                # loss = self.protop_loss(outputs, labels)
-                loss = self.protop_cam_loss(outputs, labels)
+                loss = self.protop_loss(outputs, labels)
+                # loss = self.protop_cam_loss(outputs, labels)
                 outputs_sum = outputs
 
             self.optimizer.zero_grad()
@@ -274,6 +275,15 @@ class OneFoldTrainer:
             correct += predicted.eq(labels).sum().item()
             self.train_iter += 1
 
+            progress_bar(i, len(self.loader_dict['train']),
+                         'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls_loss: %.3f |dist_loss: %.3f |pd_loss: %.3f |identity_loss: %.3f |weight_loss: %.3f '
+                         % (train_loss / (i + 1), 100. * correct / total, correct, total,
+                            self.loss_ensemble['cross_entropy'],
+                            self.loss_ensemble['dist_loss'],
+                            self.loss_ensemble['pd_loss'],
+                            self.loss_ensemble['identity_loss'],
+                            self.loss_ensemble['weight_loss']))
+            '''
             progress_bar(i, len(self.loader_dict['train']), 'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls_loss: %.3f |dist_loss: %.3f |gabor_loss: %.3f |Fourier_loss: %.3f |Gabor_l1: %.3f |Fourier_l1: %.3f |identity_loss: %.3f |weight_loss: %.3f '
                     % (train_loss / (i + 1), 100. * correct / total, correct, total,
                        self.loss_ensemble['cross_entropy'],
@@ -286,6 +296,7 @@ class OneFoldTrainer:
 
                        self.loss_ensemble['identity_loss'],
                         self.loss_ensemble['weight_loss']))
+            '''
             
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')
@@ -313,10 +324,12 @@ class OneFoldTrainer:
             outputs_sum = torch.zeros_like(outputs[0])
             if self.cfg['backbone']['name'] != 'ProtoP':
                 for j in range(len(outputs)):
-                    loss += self.protop_cam_loss(outputs[j], labels)
+                    loss += self.protop_loss(outputs[j], labels)
+                    # loss += self.protop_cam_loss(outputs[j], labels)
                     outputs_sum += outputs[j]
             else:
-                loss = self.protop_cam_loss(outputs, labels)
+                loss = self.protop_loss(outputs, labels)
+                # loss = self.protop_cam_loss(outputs, labels)
                 outputs_sum = outputs
 
             eval_loss += loss.item()
@@ -385,7 +398,6 @@ def main():
         summarize_result(config, fold, Y_true, Y_pred)
         break
 
-    
 
 if __name__ == "__main__":
     main()

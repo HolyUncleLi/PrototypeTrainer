@@ -62,10 +62,8 @@ class ProtoPNet(nn.Module):
         p2 = torch.sum(p2, dim=(1, 2))
         p2_reshape = p2.view(-1, 1)
 
-        print(x.shape, self.prototype_vectors.shape)
         xp = F.conv1d(input=x, weight=self.prototype_vectors)
         distance = -2 * xp + p2_reshape + x2_patch_sum
-        print(xp.shape, p2_reshape.shape, x2_patch_sum.shape)
         # distance = F.relu(x2_patch_sum + intermediate_result)
 
         return distance
@@ -106,19 +104,13 @@ class ProtoPNet(nn.Module):
         distance = self._layer_norm(self.distance)        # [?, P, K]
 
         ## version 2
-        print('di', )
         similarity = torch.log((distance + 1) / (distance + epsilon))  # [B, P, K]
         # similarity = torch.log(distance)
-        print('sim', similarity.shape, similarity)
         proportion_similarity = torch.mean(similarity, 2)  # [B, P]
-        print('prop1', proportion_similarity.shape, proportion_similarity)
         proportion_similarity = self.bn0(proportion_similarity)
-        print('prop2', proportion_similarity[0])
         proportion_similarity = self.relu1(proportion_similarity)
-        print('prop3', proportion_similarity[0])
         # proportion_similarity = self._min_max_scaling(proportion_similarity)
         self.proportion = proportion_similarity
-        print('s1', self.proportion)
 
         min_distance_1 = - torch.max(-distance, dim=-1).values     # [?, P]
         self.min_distance = min_distance_1.clone()
@@ -485,7 +477,7 @@ class SELayer(nn.Module):
         y = self.fc(y).view(b, c, 1)
         return x * y.expand_as(x)
 
-
+'''
 import warnings
 import argparse
 import os
@@ -512,3 +504,4 @@ config['mode'] = 'normal'
 model = ProtoPNet(config)
 x = torch.rand([64,1,30000])
 print(model(x).shape)
+'''
