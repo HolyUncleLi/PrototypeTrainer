@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 
 from utils import *
 from loader import EEGDataLoader
-from models.protop import ProtoPNet
-# from models.protop_fusion import ProtoPNet
+# from models.protop import ProtoPNet
+from models.protop_fusion import ProtoPNet
 import torch.nn.functional as F
 
 
@@ -258,12 +258,12 @@ class OneFoldTrainer:
 
             if self.cfg['backbone']['name'] != 'ProtoP':
                 for j in range(len(outputs)):
-                    loss += self.protop_loss(outputs[j], labels)
-                    # loss += self.protop_cam_loss(outputs[j], labels)
+                    # loss += self.protop_loss(outputs[j], labels)
+                    loss += self.protop_cam_loss(outputs[j], labels)
                     outputs_sum += outputs[j]
             else:
-                loss = self.protop_loss(outputs, labels)
-                # loss = self.protop_cam_loss(outputs, labels)
+                # loss = self.protop_loss(outputs, labels)
+                loss = self.protop_cam_loss(outputs, labels)
                 outputs_sum = outputs
 
             self.optimizer.zero_grad()
@@ -274,7 +274,7 @@ class OneFoldTrainer:
             predicted = torch.argmax(outputs_sum, 1)
             correct += predicted.eq(labels).sum().item()
             self.train_iter += 1
-
+            '''
             progress_bar(i, len(self.loader_dict['train']),
                          'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls_loss: %.3f |dist_loss: %.3f |pd_loss: %.3f |identity_loss: %.3f |weight_loss: %.3f '
                          % (train_loss / (i + 1), 100. * correct / total, correct, total,
@@ -296,7 +296,7 @@ class OneFoldTrainer:
 
                        self.loss_ensemble['identity_loss'],
                         self.loss_ensemble['weight_loss']))
-            '''
+
             
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')
@@ -324,12 +324,12 @@ class OneFoldTrainer:
             outputs_sum = torch.zeros_like(outputs[0])
             if self.cfg['backbone']['name'] != 'ProtoP':
                 for j in range(len(outputs)):
-                    loss += self.protop_loss(outputs[j], labels)
-                    # loss += self.protop_cam_loss(outputs[j], labels)
+                    # loss += self.protop_loss(outputs[j], labels)
+                    loss += self.protop_cam_loss(outputs[j], labels)
                     outputs_sum += outputs[j]
             else:
-                loss = self.protop_loss(outputs, labels)
-                # loss = self.protop_cam_loss(outputs, labels)
+                # loss = self.protop_loss(outputs, labels)
+                loss = self.protop_cam_loss(outputs, labels)
                 outputs_sum = outputs
 
             eval_loss += loss.item()

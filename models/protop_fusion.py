@@ -106,10 +106,11 @@ class ProtoPNet(nn.Module):
         epsilon = 1e-4
         self.distance, self.gate = self.prototype_distance(x)
         distance = self._layer_norm(self.distance)  # [?, P, K]
+        distance = distance.clamp(min=epsilon)
 
         ## version 2
-        # similarity = torch.log((distance + 1) / (distance + epsilon))  # [B, P, K]
-        similarity = torch.exp(-distance)
+        similarity = torch.log((distance + 1) / (distance + epsilon))  # [B, P, K]
+        # similarity = torch.exp(-distance)
         proportion_similarity = torch.mean(similarity, dim=2)  # [B, P]
         proportion_similarity = self.bn0(proportion_similarity)
         proportion_similarity = self.relu1(proportion_similarity)
@@ -118,8 +119,8 @@ class ProtoPNet(nn.Module):
 
         min_distance_1 = -torch.max(-distance, dim=-1).values  # [?, P]
         self.min_distance = min_distance_1.clone()
-        # wave_similarity = torch.log((min_distance_1 + 1) / (min_distance_1 + epsilon))  # [B, P]
-        wave_similarity = torch.exp(-min_distance_1)
+        wave_similarity = torch.log((min_distance_1 + 1) / (min_distance_1 + epsilon))  # [B, P]
+        # wave_similarity = torch.exp(-min_distance_1)
         wave_similarity = self.bn1(wave_similarity)
         wave_similarity = self.relu2(wave_similarity)
         # wave_similarity = self._min_max_scaling(wave_similarity)

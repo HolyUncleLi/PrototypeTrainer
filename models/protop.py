@@ -503,5 +503,6 @@ config['name'] = os.path.basename(args.config).replace('.json', '')
 config['mode'] = 'normal'
 model = ProtoPNet(config)
 x = torch.rand([64,1,30000])
-print(model(x).shape)
+out = model(x)
+print(out, out.shape)
 '''
