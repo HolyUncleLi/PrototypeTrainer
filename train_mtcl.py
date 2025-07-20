@@ -48,10 +48,10 @@ class OneFoldTrainer:
         # 超参
         self.λ_align = 1.0
         self.λ_band = 10.0
-        self.λ_G_l1 = 1e-3
-        self.λ_F_l1 = 1e-3
-        self.λ_prior = 1e-2
-        self.λ_σ = 1e-2
+        self.λ_G_l1 = 1
+        self.λ_F_l1 = 1
+        self.λ_prior = 1
+        self.λ_σ = 1
         self.f_min = 0.5
         self.f_max = 30.0
 
