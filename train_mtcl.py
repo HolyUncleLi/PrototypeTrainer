@@ -357,7 +357,7 @@ def main():
     warnings.filterwarnings("ignore", category=UserWarning) 
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--seed', type=int, default=49, help='random seed')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path', default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
     args = parser.parse_args()
@@ -383,6 +383,7 @@ def main():
         Y_pred = np.concatenate([Y_pred, y_pred])
     
         summarize_result(config, fold, Y_true, Y_pred)
+        break
 
     
 
