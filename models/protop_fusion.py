@@ -44,8 +44,7 @@ class ProtoPNet(nn.Module):
                                     sample_rate=100)
         self.fourier = FourierFilterBank(num_filters=5,
                                          kernel_size=27,
-                                         sample_rate=100,
-                                         num_bases=16)
+                                         sample_rate=100)
 
         # self.prototype_base = nn.Parameter(torch.rand(self.prototype_shape), requires_grad=True)
         # self.prototype_vectors = torch.rand(self.prototype_shape, requires_grad=True)
@@ -480,77 +479,98 @@ class SELayer(nn.Module):
 
 
 class GaborFilterBank(nn.Module):
+    """
+    5 可微 Gabor 模板，对应 K-复合、纺锤、… 等
+    f_targets 为生理上期望的中心频率（Hz）
+    """
     def __init__(self,
-                 num_filters: int = 4,
+                 num_filters: int = 5,
                  kernel_size: int = 129,
-                 sample_rate: float = 100.0):
+                 sample_rate: float = 100.0,
+                 f_targets: torch.Tensor = None):
         super().__init__()
-        self.num_filters = num_filters
+        self.num = num_filters
         self.ks = kernel_size
-        t = torch.linspace(
-            -kernel_size//2, kernel_size//2,
-            steps=kernel_size
-        ) / sample_rate
-        self.register_buffer('t', t)           # (ks,)
+        t = torch.linspace(-kernel_size//2, kernel_size//2,
+                           steps=kernel_size) / sample_rate
+        self.register_buffer('t', t)        # (ks,)
         # 可学习参数
-        self.A     = nn.Parameter(torch.ones(num_filters))
-        self.mu    = nn.Parameter(torch.zeros(num_filters))
-        self.sigma = nn.Parameter(torch.ones(num_filters)*0.1)
-        self.f     = nn.Parameter(torch.linspace(1, 15, num_filters))
-        self.phi   = nn.Parameter(torch.zeros(num_filters))
+        self.A     = nn.Parameter(torch.ones(self.num))
+        self.mu    = nn.Parameter(torch.zeros(self.num))
+        self.sigma = nn.Parameter(torch.ones(self.num)*0.1)
+        # 初始化 f_k 到生理 target
+        if f_targets is None:
+            f_targets = torch.linspace(1.0, 15.0, num_filters)
+        self.register_buffer('f_target', f_targets)
+        self.f     = nn.Parameter(f_targets.clone())
+        self.phi   = nn.Parameter(torch.zeros(self.num))
 
-    def forward(self, x: torch.Tensor):
-        # x: (B,1,T) → out: (B, num_filters, T)
-        t = self.t.view(1, 1, -1)              # (1,1,ks)
-        A     = self.A.view(-1, 1, 1)          # (num,1,1)
-        mu    = self.mu.view(-1, 1, 1)
-        sigma = self.sigma.abs().view(-1, 1, 1) + 1e-3
-        f     = self.f.clamp(0.1, 50.0).view(-1, 1, 1)
-        phi   = self.phi.view(-1, 1, 1)
+    def forward(self, x):
+        # x: (B,1,T) → out: (B,5,T)
+        t     = self.t.view(1,1,-1)                # (1,1,ks)
+        A     = self.A.view(-1,1,1)                # (5,1,1)
+        mu    = self.mu.view(-1,1,1)
+        sigma = self.sigma.abs().view(-1,1,1) + 1e-3
+        f     = self.f.clamp(0.1, 50.0).view(-1,1,1)
+        phi   = self.phi.view(-1,1,1)
 
-        gauss = torch.exp(-((t - mu)**2) / (2 * sigma**2))
+        gauss = torch.exp(-((t - mu)**2)/(2*sigma**2))
         sinus = torch.cos(2*torch.pi*f*t + phi)
-        kern = A * gauss * sinus                # (num,1,ks)
-        # out = F.conv1d(x, kern.transpose(1,2), padding=self.ks//2)  # 原方法没有padding
-        out = F.conv1d(x, kern.transpose(1, 2))
-        return out                              # (B, num, T)
+        kern  = A * gauss * sinus                  # (5,1,ks)
+        out   = F.conv1d(x, kern.transpose(1,2))
+        return out                                # (B,5,T)
+
+    def gabor_losses(self, λ_freq=1.0, λ_l1=1e-3):
+        # 频率对齐损失：(f_k - f_target)^2
+        loss_freq = (self.f - self.f_target).pow(2).sum()
+        # 稀疏化：振幅与带宽倒数
+        loss_l1   = self.A.abs().sum() + (1.0/self.sigma.abs()).sum()
+        return λ_freq * loss_freq, λ_l1 * loss_l1
 
 
 class FourierFilterBank(nn.Module):
+    """
+    5 可微 Fourier 模板，对应 δ, θ, α, β, γ 频段
+    f_targets 为各带中心频率（Hz）
+    """
     def __init__(self,
-                 num_filters: int = 4,
+                 num_filters: int = 5,
                  kernel_size: int = 129,
                  sample_rate: float = 100.0,
-                 num_bases: int = 16,
-                 f_min: float = 0.5,
-                 f_max: float = 30.0):
+                 f_targets: torch.Tensor = None):
         super().__init__()
+        self.num = num_filters
         self.ks = kernel_size
-        self.register_buffer('t',
-            torch.linspace(-kernel_size//2, kernel_size//2,
-                           steps=kernel_size) / sample_rate)  # (ks,)
-        self.register_buffer('freqs',
-            torch.linspace(f_min, f_max, num_bases))        # (nb,)
-        # 学习系数 a,b
-        self.a = nn.Parameter(torch.randn(num_filters, num_bases)*0.1)
-        self.b = nn.Parameter(torch.randn(num_filters, num_bases)*0.1)
-        self.register_buffer('w_prior',
-            torch.ones(num_filters, num_bases))  # 频带软先验权重
+        t = torch.linspace(-kernel_size//2, kernel_size//2,
+                           steps=kernel_size) / sample_rate
+        self.register_buffer('t', t)
+        # 如果用户没传，默认中心频率为 δ,θ,α,β,γ
+        if f_targets is None:
+            f_targets = torch.tensor([2.0, 6.0, 10.0, 20.0, 35.0])
+        self.register_buffer('f_target', f_targets)
+        # 学习参数
+        self.A   = nn.Parameter(torch.ones(self.num))
+        self.f   = nn.Parameter(f_targets.clone())
+        self.phi = nn.Parameter(torch.zeros(self.num))
 
-    def forward(self, x: torch.Tensor):
-        # x: (B,1,T) → out: (B, num_filters, T)
-        t     = self.t.view(1, 1, -1)            # (1,1,ks)
-        freqs = self.freqs.view(1, -1, 1)        # (1,nb,1)
-        cosb  = torch.cos(2*torch.pi*freqs*t)    # (1,nb,ks)
-        sinb  = torch.sin(2*torch.pi*freqs*t)    # (1,nb,ks)
+    def forward(self, x):
+        # x: (B,1,T) → out: (B,5,T)
+        t   = self.t.view(1,1,-1)                   # (1,1,ks)
+        A   = self.A.view(-1,1,1)
+        f   = self.f.clamp(0.1, 50.0).view(-1,1,1)
+        phi = self.phi.view(-1,1,1)
 
-        # 构建核
-        # a: (num,nb) → (num,nb,1) * (1,nb,ks) → (num,nb,ks)
-        kern = (self.a.unsqueeze(2)*cosb + self.b.unsqueeze(2)*sinb).sum(dim=1)
-        kern = kern.unsqueeze(1)                 # (num,1,ks)
-        # out = F.conv1d(x, kern.transpose(1,2), padding=self.ks//2)  # 原方法没有padding
+        # 纯正弦
+        kern = A * torch.cos(2*torch.pi*f*t + phi)  # (5,1,ks)
         out  = F.conv1d(x, kern.transpose(1,2))
-        return out                               # (B, num, T)
+        return out                                 # (B,5,T)
+
+    def fourier_losses(self, λ_freq=1.0, λ_l1=1e-3):
+        # 频率对齐
+        loss_freq = (self.f - self.f_target).pow(2).sum()
+        # 稀疏
+        loss_l1   = self.A.abs().sum()
+        return λ_freq * loss_freq, λ_l1 * loss_l1
 
 
 '''

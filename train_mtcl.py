@@ -47,13 +47,11 @@ class OneFoldTrainer:
 
         # 超参
         self.λ_align = 1.0
-        self.λ_band = 10.0
-        self.λ_G_l1 = 1
-        self.λ_F_l1 = 1
+        self.λ_band = 1
+        self.λ_G_l1 = 1e-3
+        self.λ_F_l1 = 1e-3
         self.λ_prior = 1
         self.λ_σ = 1
-        self.f_min = 0.5
-        self.f_max = 30.0
 
     def build_model(self):
         model = ProtoPNet(self.cfg)
@@ -128,8 +126,9 @@ class OneFoldTrainer:
         pd_loss = 1 / (torch.log(diversity) + 1e-4)
         self.loss_ensemble['pd_loss'] = loss_cfg['pd_lambda'] * pd_loss
         '''
+        '''
         # 5) Gabor 频带约束
-        f_k = self.model.module.gabor.f.clamp(0, 100)
+        f_k = self.model.module.gabor.f
         self.loss_ensemble['gabor_loss'] = self.λ_band * ((F.relu(f_k - self.f_max) + F.relu(self.f_min - f_k)) ** 2).sum()
 
         # 8) Fourier 频带软先验
@@ -142,6 +141,11 @@ class OneFoldTrainer:
 
         # 7) Fourier L1 稀疏
         self.loss_ensemble['Fourier_l1'] = self.λ_F_l1 * (self.model.module.fourier.a.abs() + self.model.module.fourier.b.abs()).sum()
+        '''
+        # Gabor 频率对齐 & 稀疏
+        self.loss_ensemble['gabor_loss'], self.loss_ensemble['Gabor_l1'] = self.model.module.gabor.gabor_losses(self.λ_band, self.λ_G_l1)
+        # Fourier 频率对齐 & 稀疏
+        self.loss_ensemble['Fourier_loss'], self.loss_ensemble['Fourier_l1'] = self.model.module.fourier.fourier_losses(self.λ_prior, self.λ_F_l1)
 
         # identity loss
         identity_loss = torch.mean(torch.min(min_dist, 0).values)
