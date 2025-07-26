@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
 # from models.protop import ProtoPNet
-from models.protop_fusion import ProtoPNet
+from models.protop_fgn import ProtoPNet
 import torch.nn.functional as F
 
 
@@ -43,7 +43,6 @@ class OneFoldTrainer:
         self.ckpt_path = os.path.join('checkpoints', config['name']+'_'+str(args.seed))
         self.ckpt_name = 'ckpt_fold-{0:02d}.pth'.format(self.fold)
         self.early_stopping = EarlyStopping(patience=self.es_cfg['patience'], verbose=True, ckpt_path=self.ckpt_path, ckpt_name=self.ckpt_name, mode=self.es_cfg['mode'])
-
 
         # 超参
         self.λ_align = 1.0

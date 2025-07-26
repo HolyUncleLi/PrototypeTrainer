@@ -22,7 +22,7 @@
 
     "classifier": {
         "name": "ProtoP",
-        "prototype_shape": [10, 27, 1],
+        "prototype_shape": [10, 128, 1],
         "feedforward_dim": 64,
 
         "block_num": 6,  
@@ -30,7 +30,7 @@
         "kernel_size": 9,  
         "repeat_num": 3,  
         "strides_num": 1,  
-        "afr_reduced_dim": 27,  
+        "afr_reduced_dim": 128,
 
         "prototype_num": 10,  
         "feature_dim": 64,  

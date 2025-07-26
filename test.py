@@ -103,6 +103,9 @@ def main():
         Y_pred = np.concatenate([Y_pred, y_pred])
 
         summarize_result(config, fold, Y_true, Y_pred)
+        from visualize_prototype import visualize_filters_via_data
+        
+        visualize_filters_via_data(evaluator.model, evaluator.loader_dict['test'], evaluator.device)
 
         # cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 

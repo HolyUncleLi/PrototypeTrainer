@@ -25,7 +25,7 @@ class ProtoPNet(nn.Module):
         # self.feature_dim = self.cfg['classifier']['feature_dim']
         afr_reduced_cnn_size = self.cfg['classifier']['afr_reduced_dim']
         self.feature_dim = afr_reduced_cnn_size
-        self.xfeat = torch.rand([64,27,777])
+        # self.xfeat = torch.rand([64,27,777])
 
         # 特征提取
         self.mrcnn = MRCNN(afr_reduced_cnn_size)  # use MRCNN_SHHS for SHHS dataset
@@ -40,10 +40,10 @@ class ProtoPNet(nn.Module):
 
         # 模板
         self.gabor = GaborFilterBank(num_filters=5,
-                                    kernel_size=27,
+                                    kernel_size=128,
                                     sample_rate=100)
         self.fourier = FourierFilterBank(num_filters=5,
-                                         kernel_size=27,
+                                         kernel_size=128,
                                          sample_rate=100)
 
         # self.prototype_base = nn.Parameter(torch.rand(self.prototype_shape), requires_grad=True)
@@ -76,7 +76,9 @@ class ProtoPNet(nn.Module):
 
     def prototype_distance(self, x):
         x_feat = self.mrcnn(x)
+        print(x_feat.shape)
         conv_features = self.conv_features(x_feat)
+        print(conv_features.shape)
         self.xfeat = conv_features
         distance = self._l2_convolution(conv_features)
 
@@ -573,7 +575,7 @@ class FourierFilterBank(nn.Module):
         return λ_freq * loss_freq, λ_l1 * loss_l1
 
 
-'''
+
 import warnings
 import argparse
 import os
@@ -601,4 +603,3 @@ model = ProtoPNet(config)
 x = torch.rand([64,1,30000])
 out = model(x)
 print(out, out.shape)
-'''
