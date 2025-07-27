@@ -22,7 +22,7 @@
 
     "classifier": {
         "name": "ProtoP",
-        "prototype_shape": [10, 64, 1],
+        "prototype_shape": [10, 27, 1],
         "feedforward_dim": 64,
 
         "block_num": 6,
@@ -30,7 +30,7 @@
         "kernel_size": 9,
         "repeat_num": 3,
         "strides_num": 1,
-        "afr_reduced_dim": 64,
+        "afr_reduced_dim": 27,
 
         "prototype_num": 10,
         "feature_dim": 64,
@@ -48,11 +48,11 @@
 
     "training_params": {
         "mode": "freezefinetune",
-        "max_epochs": 5000,
+        "max_epochs": 200,
         "batch_size": 64,
         "lr": 0.0005,
         "weight_decay": 0.0001,
-        "val_period": 500,
+        "val_period": 50,
         "early_stopping": {
             "mode": "max",
             "patience": 50
