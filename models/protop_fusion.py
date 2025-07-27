@@ -40,10 +40,10 @@ class ProtoPNet(nn.Module):
 
         # 模板
         self.gabor = GaborFilterBank(num_filters=5,
-                                    kernel_size=128,
+                                    kernel_size=64,
                                     sample_rate=100)
         self.fourier = FourierFilterBank(num_filters=5,
-                                         kernel_size=128,
+                                         kernel_size=64,
                                          sample_rate=100)
 
         # self.prototype_base = nn.Parameter(torch.rand(self.prototype_shape), requires_grad=True)
