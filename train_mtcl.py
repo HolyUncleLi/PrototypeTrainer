@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
 # from models.protop import ProtoPNet
-from models.protop_fgn import ProtoPNet
+from models.protop_fusion import ProtoPNet
 import torch.nn.functional as F
 
 

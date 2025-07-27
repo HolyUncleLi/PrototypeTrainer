@@ -182,10 +182,10 @@ def getFGN():
             hidden_size=args.hidden_size)
     return model.cuda()
 
-'''
+
 model = getFGN()
-# x = torch.rand([64, 128, 777]).cuda()
-# print(model(x).shape)
+x = torch.rand([64, 777, 128]).cuda()
+print(model(x).shape)
 total_params = sum(p.numel() for p in model.parameters())
 print(f"Total number of parameters: {total_params}")
-'''
+

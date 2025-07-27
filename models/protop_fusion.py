@@ -40,10 +40,10 @@ class ProtoPNet(nn.Module):
 
         # 模板
         self.gabor = GaborFilterBank(num_filters=5,
-                                    kernel_size=64,
+                                    kernel_size=128,
                                     sample_rate=100)
         self.fourier = FourierFilterBank(num_filters=5,
-                                         kernel_size=64,
+                                         kernel_size=128,
                                          sample_rate=100)
 
         # self.prototype_base = nn.Parameter(torch.rand(self.prototype_shape), requires_grad=True)
@@ -76,9 +76,7 @@ class ProtoPNet(nn.Module):
 
     def prototype_distance(self, x):
         x_feat = self.mrcnn(x)
-        print(x_feat.shape)
         conv_features = self.conv_features(x_feat)
-        print(conv_features.shape)
         self.xfeat = conv_features
         distance = self._l2_convolution(conv_features)
 
@@ -504,7 +502,7 @@ class GaborFilterBank(nn.Module):
         if f_targets is None:
             f_targets = torch.linspace(1.0, 15.0, num_filters)
         self.register_buffer('f_target', f_targets)
-        self.f     = nn.Parameter(f_targets.clone())
+        self.f     = nn.Parameter(torch.rand(f_targets.shape))
         self.phi   = nn.Parameter(torch.zeros(self.num))
 
     def forward(self, x):
@@ -552,7 +550,7 @@ class FourierFilterBank(nn.Module):
         self.register_buffer('f_target', f_targets)
         # 学习参数
         self.A   = nn.Parameter(torch.ones(self.num))
-        self.f   = nn.Parameter(f_targets.clone())
+        self.f   = nn.Parameter(torch.rand(f_targets.shape))
         self.phi = nn.Parameter(torch.zeros(self.num))
 
     def forward(self, x):
@@ -575,7 +573,7 @@ class FourierFilterBank(nn.Module):
         return λ_freq * loss_freq, λ_l1 * loss_l1
 
 
-
+'''
 import warnings
 import argparse
 import os
@@ -585,7 +583,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--seed', type=int, default=49, help='random seed')
+parser.add_argument('--seed', type=int, default=42, help='random seed')
 parser.add_argument('--gpu', type=str, default="0", help='gpu id')
 parser.add_argument('--config', type=str, help='config file path',
                     default='./SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
@@ -603,3 +601,4 @@ model = ProtoPNet(config)
 x = torch.rand([64,1,30000])
 out = model(x)
 print(out, out.shape)
+'''

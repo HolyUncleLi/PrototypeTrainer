@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import copy
 import torch.nn.functional as F
-from .FGN import getFGN
+from FGN import getFGN
 
 
 def clones(module, N):
@@ -18,6 +18,44 @@ def layer_norm(x):
     return (x - mean) / (std + eps)
 
 
+class ARFEmbedding(nn.Module):
+    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
+        super(ARFEmbedding, self).__init__()
+        self.inplanes = c_in
+        self.ARF = self._make_layer(SEBasicBlock, d_model, 1)
+        # self.position_embedding = PositionalEmbedding(d_model=c_in)
+        self.flatten = nn.Flatten()
+        self.dropout = nn.Dropout(p=dropout)
+
+    def _make_layer(self, block, planes, blocks, stride=1):  # makes residual SE block
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv1d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+        return nn.Sequential(*layers)
+
+    def forward(self, x, x_mark=None, stage=2):
+        # print("embed arf in", x.shape)
+        x = self.ARF(x)
+        # print("embed arf out", x.shape)
+        # x = self.flatten(x)
+        # print("embed flatten out", x.shape)
+        x = x.transpose(1,2)
+        # print("embed trans out", x.shape)
+        # print(self.position_embedding(x).shape)
+        # x = x + self.position_embedding(x)
+        # print("embed out", x.shape)
+        return x
+
 class ProtoPNet(nn.Module):
     def __init__(self, config):
         super(ProtoPNet, self).__init__()
@@ -31,7 +69,8 @@ class ProtoPNet(nn.Module):
         # 特征提取
         self.inplanes = 128
         self.mrcnn = MRCNN(afr_reduced_cnn_size)  # use MRCNN_SHHS for SHHS dataset
-        # self.arf = self._make_layer(SEBasicBlock, 128, 1)
+        # self.arf = ARFEmbedding(128, 80)
+        self.maxpool = nn.AdaptiveAvgPool1d(256)
         self.fgn = getFGN()
         self.gate_conv = nn.Conv1d(afr_reduced_cnn_size, 2, kernel_size=9, padding='same', stride=1)
         self.prototype_shape = self.cfg['classifier']['prototype_shape']
@@ -44,10 +83,10 @@ class ProtoPNet(nn.Module):
 
         # 模板
         self.gabor = GaborFilterBank(num_filters=5,
-                                    kernel_size=128,
+                                    kernel_size=64,
                                     sample_rate=100)
         self.fourier = FourierFilterBank(num_filters=5,
-                                         kernel_size=128,
+                                         kernel_size=64,
                                          sample_rate=100)
 
         # self.prototype_base = nn.Parameter(torch.rand(self.prototype_shape), requires_grad=True)
@@ -97,7 +136,10 @@ class ProtoPNet(nn.Module):
 
     def prototype_distance(self, x):
         x_feat = self.mrcnn(x)
+        print(x_feat.shape)
         # conv_features = self.arf(x_feat)
+        conv_features = self.maxpool(x_feat)
+        print(conv_features.shape)
         conv_features = self.fgn(x_feat)
 
         self.xfeat = conv_features
@@ -596,7 +638,6 @@ class FourierFilterBank(nn.Module):
         return λ_freq * loss_freq, λ_l1 * loss_l1
 
 
-'''
 import warnings
 import argparse
 import os
@@ -624,4 +665,3 @@ model = ProtoPNet(config).cuda()
 x = torch.rand([64,1,30000]).cuda()
 out = model(x)
 print(out, out.shape)
-'''
