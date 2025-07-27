@@ -40,10 +40,10 @@ class ProtoPNet(nn.Module):
 
         # 模板
         self.gabor = GaborFilterBank(num_filters=5,
-                                    kernel_size=128,
+                                    kernel_size=afr_reduced_cnn_size,
                                     sample_rate=100)
         self.fourier = FourierFilterBank(num_filters=5,
-                                         kernel_size=128,
+                                         kernel_size=afr_reduced_cnn_size,
                                          sample_rate=100)
 
         # self.prototype_base = nn.Parameter(torch.rand(self.prototype_shape), requires_grad=True)
@@ -502,7 +502,7 @@ class GaborFilterBank(nn.Module):
         if f_targets is None:
             f_targets = torch.linspace(1.0, 15.0, num_filters)
         self.register_buffer('f_target', f_targets)
-        self.f     = nn.Parameter(torch.rand(f_targets.shape) * 20)
+        self.f     = nn.Parameter(f_targets.clone() + torch.randn(f_targets.shape) * 1.5)
         self.phi   = nn.Parameter(torch.zeros(self.num))
 
     def forward(self, x):
@@ -550,7 +550,7 @@ class FourierFilterBank(nn.Module):
         self.register_buffer('f_target', f_targets)
         # 学习参数
         self.A   = nn.Parameter(torch.ones(self.num))
-        self.f   = nn.Parameter(torch.rand(f_targets.shape) * 50)
+        self.f   = nn.Parameter(f_targets.clone() + torch.randn(f_targets.shape) * 3.0)
         self.phi = nn.Parameter(torch.zeros(self.num))
 
     def forward(self, x):
