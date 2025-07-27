@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import copy
 import torch.nn.functional as F
-from FGN import getFGN
+from .FGN import getFGN
 
 
 def clones(module, N):
