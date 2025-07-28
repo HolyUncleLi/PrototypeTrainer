@@ -502,7 +502,7 @@ class GaborFilterBank(nn.Module):
         if f_targets is None:
             f_targets = torch.linspace(1.0, 15.0, num_filters)
         self.register_buffer('f_target', f_targets)
-        self.f     = nn.Parameter(f_targets.clone() + torch.randn(f_targets.shape) * 1.5)
+        self.f     = nn.Parameter(f_targets.clone() + torch.randn(f_targets.shape) * 0.5)
         self.phi   = nn.Parameter(torch.zeros(self.num))
 
     def forward(self, x):
@@ -550,7 +550,7 @@ class FourierFilterBank(nn.Module):
         self.register_buffer('f_target', f_targets)
         # 学习参数
         self.A   = nn.Parameter(torch.ones(self.num))
-        self.f   = nn.Parameter(f_targets.clone() + torch.randn(f_targets.shape) * 3.0)
+        self.f   = nn.Parameter(f_targets.clone() + torch.randn(f_targets.shape) * 1.5)
         self.phi = nn.Parameter(torch.zeros(self.num))
 
     def forward(self, x):

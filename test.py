@@ -103,10 +103,13 @@ def main():
         Y_pred = np.concatenate([Y_pred, y_pred])
 
         summarize_result(config, fold, Y_true, Y_pred)
-        from visualize_prototype import visualize_filters_via_data
+        from visualize_prototype import visualize_prototypes_with_perturbation, explain_single_sample_with_perturbation
         
-        visualize_filters_via_data(evaluator.model, evaluator.loader_dict['test'], evaluator.device)
-
+        # visualize_filters_via_data(evaluator.model, evaluator.loader_dict['test'], evaluator.device)
+        class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
+        visualize_prototypes_with_perturbation(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
+        single_sample, _ = evaluator.loader_dict['test'][0]
+        explain_single_sample_with_perturbation(evaluator.model, single_sample.unsqueeze(0), evaluator.device, class_names)
         # cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
     # 绘制平均混淆矩阵
