@@ -107,9 +107,14 @@ def main():
         
         # visualize_filters_via_data(evaluator.model, evaluator.loader_dict['test'], evaluator.device)
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-        visualize_prototypes_with_perturbation(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
-        single_sample, _ = evaluator.loader_dict['test'][0]
-        explain_single_sample_with_perturbation(evaluator.model, single_sample.unsqueeze(0), evaluator.device, class_names)
+        # visualize_prototypes_with_perturbation(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
+        num = 0
+        for (x, y) in evaluator.loader_dict['test']:
+            print('true label: ', y[0].item())
+            explain_single_sample_with_perturbation(evaluator.model, x[0].unsqueeze(0), evaluator.device, class_names)
+            num += 1
+            if num > 10:
+                break
         # cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
     # 绘制平均混淆矩阵

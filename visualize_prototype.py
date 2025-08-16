@@ -118,7 +118,7 @@ class ProtoPNet(nn.Module):
 
 
 # =============================================================================
-# 2. 最终的可视化与解释函数 (已修复内存问题)
+# 2. 最终的可视化与解释函数
 # =============================================================================
 
 def find_critical_segment_with_perturbation(model, signal_epoch, p_idx, feature_map_idx, perturb_len, device):
@@ -182,7 +182,7 @@ def visualize_prototypes_with_perturbation(model, data_loader, device, class_nam
     is_parallel = isinstance(model, nn.DataParallel)
     model_to_access = model.module if is_parallel else model
 
-    model.eval();
+    model.eval()
     model.to(device)
 
     num_prototypes = model_to_access.protop_num
@@ -224,7 +224,7 @@ def explain_single_sample_with_perturbation(model, eeg_sample, device, class_nam
     is_parallel = isinstance(model, nn.DataParallel)
     model_to_access = model.module if is_parallel else model
 
-    model.eval();
+    model.eval()
     model.to(device)
     eeg_sample = eeg_sample.to(device)
 
@@ -248,6 +248,7 @@ def explain_single_sample_with_perturbation(model, eeg_sample, device, class_nam
             print(
                 f"{i + 1:<3}. Prototype #{p_idx:<3} | Contribution Score: {score:8.2f} {'<-- Most Influential' if i == 0 else ''}")
 
+        '''
         most_influential_p_idx = contributions[0][0]
         distances_for_sample = model_to_access.distance[0]
         _, feature_map_idx = torch.min(distances_for_sample[most_influential_p_idx], dim=0)
@@ -261,6 +262,7 @@ def explain_single_sample_with_perturbation(model, eeg_sample, device, class_nam
         plot_context[start_idx: start_idx + len(wavelet)] = wavelet
         prototype_plot(wavelet, plot_context, full_signal, f"Predicted: {class_names[pred_idx]}",
                        f"#{most_influential_p_idx} (Most Influential)")
+        '''
 
 
 '''

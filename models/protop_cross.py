@@ -83,7 +83,7 @@ class ProtoPNet(nn.Module):
         ## Gate
         gate = self.gate_conv(conv_features)  ##[?, 2, K]
         gate = gate.max(2).values  ##[?, 2]
-        #    gate = torch.mean(gate, 2, keepdims=False)                ##[?, 2]
+        # gate = torch.mean(gate, 2, keepdims=False)                ##[?, 2]
         gate = gate.view(-1, 1, 2)
         gate = torch.softmax(gate, dim=-1)
         return distance, gate
@@ -569,7 +569,7 @@ class FourierFilterBank(nn.Module):
         # 频率对齐
         loss_freq = (self.f - self.f_target).pow(2).sum()
         # 稀疏
-        loss_l1   = self.A.abs().sum()
+        loss_l1 = self.A.abs().sum()
         return λ_freq * loss_freq, λ_l1 * loss_l1
 
 
