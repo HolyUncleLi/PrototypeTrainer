@@ -1,3 +1,5 @@
+# --- protop_cross.py (Lightweight Version for Long Sequence) ---
+
 import math
 import torch
 import torch.nn as nn
@@ -6,43 +8,87 @@ import torch.nn.functional as F
 
 
 # ====================================================================
-# 1. Feature Extraction: MRCNN
+# 1. 轻量化的长序列EEG特征提取器: EEGNetProto_Light
 # ====================================================================
-class GELU(nn.Module):
-    def __init__(self): super(GELU, self).__init__()
 
-    def forward(self, x): return torch.nn.functional.gelu(x)
+class ResidualBlock(nn.Module):
+    """
+    一个标准的残差块 (保持不变)。
+    """
 
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=7, stride=stride, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.gelu = nn.GELU()
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=7, stride=1, padding=3, bias=False)
+        self.bn2 = nn.BatchNorm1d(out_channels)
 
-class MRCNN(nn.Module):
-    def __init__(self, afr_reduced_cnn_size):
-        super(MRCNN, self).__init__()
-        drate = 0.5
-        self.GELU = GELU()
-        self.features1 = nn.Sequential(
-            nn.Conv1d(1, 64, kernel_size=50, stride=6, bias=False, padding=24), nn.BatchNorm1d(64), self.GELU,
-            nn.MaxPool1d(kernel_size=8, stride=2, padding=4), nn.Dropout(drate),
-            nn.Conv1d(64, 128, kernel_size=8, stride=1, bias=False, padding=4), nn.BatchNorm1d(128), self.GELU,
-            nn.Conv1d(128, 128, kernel_size=8, stride=1, bias=False, padding=4), nn.BatchNorm1d(128), self.GELU,
-            nn.MaxPool1d(kernel_size=4, stride=2, padding=1)
-        )
-        self.features2 = nn.Sequential(
-            nn.Conv1d(1, 64, kernel_size=400, stride=25, bias=False, padding=200), nn.BatchNorm1d(64), self.GELU,
-            nn.MaxPool1d(kernel_size=4, stride=2, padding=2), nn.Dropout(drate),
-            nn.Conv1d(64, 128, kernel_size=7, stride=1, bias=False, padding=3), nn.BatchNorm1d(128), self.GELU,
-            nn.Conv1d(128, 128, kernel_size=7, stride=1, bias=False, padding=3), nn.BatchNorm1d(128), self.GELU,
-            nn.MaxPool1d(kernel_size=2, stride=2, padding=1)
-        )
-        self.dropout = nn.Dropout(drate)
-        self.AFR = nn.Conv1d(128, afr_reduced_cnn_size, kernel_size=1)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(out_channels)
+            )
 
     def forward(self, x):
-        x1 = self.features1(x);
-        x2 = self.features2(x)
-        x_concat = torch.cat((x1, x2), dim=2)
-        x_concat = self.dropout(x_concat);
-        x_concat = self.AFR(x_concat)
-        return x_concat
+        out = self.gelu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.gelu(out)
+        return out
+
+
+class EEGNetProto_Light(nn.Module):
+    """
+    一个专为长序列EEG设计的轻量化深度特征提取器，参数量控制在200万左右。
+    - 关键改动: 减少了网络宽度(通道数)和最深层的块数。
+    """
+
+    def __init__(self, input_channels, afr_reduced_cnn_size, block, num_blocks, fixed_output_size=256):
+        super(EEGNetProto_Light, self).__init__()
+        # *** 关键改动: 降低初始通道数 ***
+        self.in_channels = 32
+
+        # 初始卷积层
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=100, stride=2, padding=49, bias=False)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.gelu = nn.GELU()
+        self.pool1 = nn.AvgPool1d(kernel_size=4, stride=2, padding=1)
+
+        # *** 关键改动: 构建更窄的残差层 ***
+        # 通道数 progression: 32 -> 64 -> 128 -> 256
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=2)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 256, num_blocks[3], stride=1)  # 最后一层不增加通道数以节省参数
+
+        # 自适应池化层
+        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_size=fixed_output_size)
+
+        # 最后的1x1卷积
+        self.final_conv = nn.Conv1d(256, afr_reduced_cnn_size, kernel_size=1)
+        self.dropout = nn.Dropout(0.5)
+
+    def _make_layer(self, block, out_channels, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(block(self.in_channels, out_channels, s))
+            self.in_channels = out_channels
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.gelu(self.bn1(self.conv1(x)))
+        out = self.pool1(out)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.adaptive_pool(out)
+        out = self.dropout(out)
+        out = self.final_conv(out)
+        return out
 
 
 class TCN(nn.Module):
@@ -54,7 +100,7 @@ class TCN(nn.Module):
 
 
 # ====================================================================
-# 2. Base Prototype Libraries
+# 2. 基础原型库 (保持不变)
 # ====================================================================
 class GaborFilterBank(nn.Module):
     def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
@@ -64,14 +110,14 @@ class GaborFilterBank(nn.Module):
         self.register_buffer('t', t)
         self.A, self.mu, self.sigma = [nn.Parameter(p) for p in
                                        [torch.ones(self.num), torch.zeros(self.num), torch.ones(self.num) * 0.1]]
-        self.f = nn.Parameter(torch.linspace(1.0, 30.0, num_filters) + torch.randn(num_filters) * 0.1)
+        self.f = nn.Parameter(torch.linspace(1.0, 40.0, num_filters) + torch.randn(num_filters) * 0.1)
         self.phi = nn.Parameter(torch.zeros(self.num))
 
     def get_kernels(self):
         t, A, mu, sigma, f, phi = [p.view(-1, 1, 1) for p in
                                    [self.t.view(1, 1, -1), self.A, self.mu, self.sigma.abs() + 1e-4,
                                     self.f.clamp(0.1, 50.0), self.phi]]
-        gauss = torch.exp(-((t - mu) ** 2) / (2 * sigma ** 2));
+        gauss = torch.exp(-((t - mu) ** 2) / (2 * sigma ** 2))
         sinus = torch.cos(2 * torch.pi * f * t + phi)
         return A * gauss * sinus
 
@@ -92,7 +138,7 @@ class FourierFilterBank(nn.Module):
 
 
 # ====================================================================
-# 3. CORRECTED Core Model: ProtoPNet
+# 3. 核心模型: ProtoPNet (使用轻量化特征提取器)
 # ====================================================================
 class ProtoPNet(nn.Module):
     def __init__(self, config):
@@ -100,14 +146,23 @@ class ProtoPNet(nn.Module):
         self.cfg = config
 
         afr_reduced_cnn_size = self.cfg['classifier']['afr_reduced_dim']
-        self.mrcnn = MRCNN(afr_reduced_cnn_size)
-        self.conv_features = TCN(afr_reduced_cnn_size)
+
+        # *** 关键改动: 实例化新的 EEGNetProto_Light 特征提取器 ***
+        self.feature_extractor = EEGNetProto_Light(
+            input_channels=1,
+            afr_reduced_cnn_size=afr_reduced_cnn_size,
+            block=ResidualBlock,
+            num_blocks=[2, 2, 2, 2],  # 使用一个均衡的深度配置
+            fixed_output_size=256
+        )
+        self.tcn_layer = TCN(afr_reduced_cnn_size)
 
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
         self.prototype_kernel_size = self.cfg['classifier']['prototype_shape'][2]
 
-        self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size)
-        self.fourier_basis_bank = FourierFilterBank(self.num_fourier_basis, self.prototype_kernel_size)
+        self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size, sample_rate=100.0)
+        self.fourier_basis_bank = FourierFilterBank(self.num_fourier_basis, self.prototype_kernel_size,
+                                                    sample_rate=100.0)
 
         self.num_composite_prototypes = self.cfg['classifier']['prototype_num']
         num_total_basis = self.num_gabor_basis + self.num_fourier_basis
@@ -118,7 +173,6 @@ class ProtoPNet(nn.Module):
         self.bn = nn.BatchNorm1d(self.num_composite_prototypes)
         self.fc = nn.Linear(self.num_composite_prototypes, num_classes)
 
-        # 初始化 min_distance 属性，这是一个好习惯
         self.min_distance = None
 
     def _l2_convolution(self, x, prototypes):
@@ -132,28 +186,19 @@ class ProtoPNet(nn.Module):
         return F.relu(x2_patch_sum - 2 * xp + p2_sum)
 
     def forward(self, x):
-        # 1. 提取特征
-        conv_features = self.conv_features(self.mrcnn(x))
+        conv_features = self.tcn_layer(self.feature_extractor(x))
         C = conv_features.shape[1]
 
-        # 2. 构建原型
         gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)
         fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)
         base_prototypes = torch.cat((gabor_kernels, fourier_kernels), dim=0)
         composite_prototypes = torch.matmul(F.relu(self.mixing_weights), base_prototypes.flatten(1))
         composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
 
-        # 3. 计算距离图
         distance = self._l2_convolution(conv_features, composite_prototypes)
-
-        # 4. 全局池化
         min_distance = -F.max_pool1d(-distance, kernel_size=distance.shape[2]).squeeze(2)
-
-        # 5. *** 关键修复 ***
-        # 将 min_distance 保存为模型属性
         self.min_distance = min_distance
 
-        # 6. 计算相似度并分类
         similarity = torch.log((min_distance + 1) / (min_distance + 1e-4))
         bn_similarity = self.bn(similarity)
         logits = self.fc(bn_similarity)
