@@ -211,7 +211,7 @@ class OneFoldTrainer:
 
 
 def main():
-    warnings.filterwarnings("ignore", category=DeprecationWarning);
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
     warnings.filterwarnings("ignore", category=UserWarning)
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=42, help='random seed')
@@ -223,14 +223,14 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     set_random_seed(args.seed, use_cuda=torch.cuda.is_available())
     with open(args.config) as config_file: config = json.load(config_file)
-    config['name'] = os.path.basename(args.config).replace('.json', '');
+    config['name'] = os.path.basename(args.config).replace('.json', '')
     config['mode'] = 'normal'
     Y_true = np.zeros(0);
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
     for fold in range(1, config['dataset']['num_splits'] + 1):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
-        Y_true = np.concatenate([Y_true, y_true]);
+        Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
         break
