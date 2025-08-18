@@ -1,4 +1,4 @@
-# --- train_mtcl.py ---
+# --- train_mtcl.py (with updated progress bar) ---
 
 import os, sys
 import json
@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 
 from utils import *
 from loader import EEGDataLoader
-from models.protop_cross import ProtoPNet
+from models.protop_cross import ProtoPNet  # 确保这里的导入路径和类名正确
 import torch.nn.functional as F
 
 CLASS_WEIGHT = [1, 1.5, 1, 1, 1]
@@ -33,11 +33,6 @@ class OneFoldTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print('[INFO] Config name: {}'.format(config['name']))
 
-        # *** 重要提示 ***
-        # 确保您的 EEGDataLoader 对每个输入的epoch(长度30000的信号)进行了归一化。
-        # 例如，Z-score标准化: new_signal = (signal - signal.mean()) / (signal.std() + 1e-6)
-        # 这是提升模型性能至关重要的一步。
-
         self.train_iter = 0
         self.model = self.build_model()
         self.loader_dict = self.build_dataloader()
@@ -53,19 +48,20 @@ class OneFoldTrainer:
         self.early_stopping = EarlyStopping(patience=self.es_cfg['patience'], verbose=True, ckpt_path=self.ckpt_path,
                                             ckpt_name=self.ckpt_name, mode=self.es_cfg['mode'])
 
-        # *** 关键改动: 调整损失权重 ***
+        # 更新后的 Lambda 权重
         self.lambdas = {
-            'cls': self.cfg['classifier']['class_lambda'],  # 保持为 1.0 或配置文件中的值
-            'dist': 0.1,  # 从 1.0 降低，鼓励模型优先学习分类
-            'identity': 0.05,  # 从 1.0 降低，作为次要的正则化项
-            'freq': 0.1,  # 频率引导损失的权重
-            'gabor_l1': 1e-4,  # Gabor基础原型振幅的L1稀疏权重
-            'fourier_l1': 1e-4,  # Fourier基础原型振幅的L1稀疏权重
-            'mix_l1': 1e-3  # 混合权重的L1稀疏权重
+            'cls': self.cfg['classifier']['class_lambda'],
+            'dist': 0.1,  # 聚类损失权重
+            'identity': 0.05,  # 分离损失权重 (复用 identity)
+            'gabor_spec': 0.01,  # Gabor专业化损失权重
+            'fourier_spec': 0.01,  # Fourier专业化损失权重
+            'orth': 0.1,  # Learnable正交性损失权重
+            'mix_l1': 1e-3  # 混合权重稀疏性
         }
         print(f"[INFO] Using loss lambdas: {self.lambdas}")
 
     def build_model(self):
+        # ... (此函数保持不变)
         model = ProtoPNet(self.cfg)
         print('[INFO] Number of params of model: ', sum(p.numel() for p in model.parameters() if p.requires_grad))
         if len(self.args.gpu.split(",")) > 1:
@@ -75,6 +71,7 @@ class OneFoldTrainer:
         return model
 
     def build_dataloader(self):
+        # ... (此函数保持不变)
         train_dataset = EEGDataLoader(self.cfg, self.fold, set='train')
         train_loader = DataLoader(dataset=train_dataset, batch_size=self.tp_cfg['batch_size'], shuffle=True,
                                   num_workers=4 * len(self.args.gpu.split(",")), pin_memory=True)
@@ -90,44 +87,45 @@ class OneFoldTrainer:
     def activate_train_mode(self):
         self.model.train()
 
-    def compute_v2_loss(self, outputs, labels):
+    def compute_comprehensive_loss(self, outputs, labels):
+        # ... (此函数保持不变, 即您上一轮提供的版本)
         self.loss_ensemble = {}
-
-        # 1. 分类损失 (Cross-Entropy)
+        model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
         cross_entropy = self.criterion(outputs, labels)
         self.loss_ensemble['cross_entropy'] = self.lambdas['cls'] * cross_entropy
-
-        # 2. ProtoPNet 距离损失
-        min_dist = self.model.module.min_distance if isinstance(self.model,
-                                                                nn.DataParallel) else self.model.min_distance
-        dist_loss = torch.mean(torch.min(min_dist, dim=1).values)
-        self.loss_ensemble['dist_loss'] = self.lambdas['dist'] * dist_loss
-        identity_loss = torch.mean(torch.min(min_dist, dim=0).values)
-        self.loss_ensemble['identity_loss'] = self.lambdas['identity'] * identity_loss
-
-        # 3. 频率引导损失
-        gabor_targets = torch.cat([
-            14 + 2 * torch.rand(5), 2 + 2 * torch.rand(5),
-            10 + 2 * torch.rand(5), 25 + 5 * torch.rand(5)
-        ]).to(self.device)
-        fourier_targets = torch.cat([
-            2 + 2 * torch.rand(10), 20 + 10 * torch.rand(10)
-        ]).to(self.device)
-
-        model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
-        l_freq_gabor = F.mse_loss(model_module.gabor_basis_bank.f, gabor_targets)
-        l_freq_fourier = F.mse_loss(model_module.fourier_basis_bank.f, fourier_targets)
-        self.loss_ensemble['gabor_loss'] = self.lambdas['freq'] * l_freq_gabor
-        self.loss_ensemble['Fourier_loss'] = self.lambdas['freq'] * l_freq_fourier
-
-        # 4. 稀疏性损失
-        l_gabor_l1 = torch.norm(model_module.gabor_basis_bank.A, p=1)
-        l_fourier_l1 = torch.norm(model_module.fourier_basis_bank.A, p=1)
-        self.loss_ensemble['Gabor_l1'] = self.lambdas['gabor_l1'] * l_gabor_l1
-        self.loss_ensemble['Fourier_l1'] = self.lambdas['fourier_l1'] * l_fourier_l1
+        min_dist = model_module.min_distance
+        num_prototypes_per_class = model_module.num_composite_prototypes // model_module.fc.out_features
+        prototype_class_identity = torch.zeros(model_module.num_composite_prototypes, model_module.fc.out_features,
+                                               device=self.device)
+        for j in range(model_module.fc.out_features):
+            prototype_class_identity[j * num_prototypes_per_class: (j + 1) * num_prototypes_per_class, j] = 1
+        inverted_distances = -min_dist
+        same_class_distances = inverted_distances + torch.log(prototype_class_identity.T.unsqueeze(0))
+        max_same_class_dist = torch.max(same_class_distances, dim=1).values
+        clst_loss = torch.mean(-max_same_class_dist)
+        self.loss_ensemble['clst_loss'] = self.lambdas['dist'] * clst_loss
+        diff_class_distances = inverted_distances + torch.log(1 - prototype_class_identity.T.unsqueeze(0))
+        max_diff_class_dist = torch.max(diff_class_distances, dim=1).values
+        sep_loss = torch.mean(max_diff_class_dist)
+        self.loss_ensemble['sep_loss'] = self.lambdas['identity'] * sep_loss
+        gabor_bank = model_module.gabor_basis_bank
+        fourier_bank = model_module.fourier_basis_bank
+        learnable_kernels = model_module.learnable_basis_bank
+        gabor_mu_loss = torch.mean(gabor_bank.mu ** 2)
+        gabor_sigma_loss = torch.mean(F.relu(gabor_bank.sigma - 0.5))
+        self.loss_ensemble['gabor_spec_loss'] = self.lambdas.get('gabor_spec', 0.01) * (
+                    gabor_mu_loss + gabor_sigma_loss)
+        fourier_amp_variance_loss = torch.var(fourier_bank.A)
+        self.loss_ensemble['fourier_spec_loss'] = self.lambdas.get('fourier_spec', 0.01) * fourier_amp_variance_loss
+        gabor_kernels = gabor_bank.get_kernels().flatten(1)
+        fourier_kernels = fourier_bank.get_kernels().flatten(1)
+        learnable_flat = learnable_kernels.flatten(1)
+        all_fixed_kernels = torch.cat([gabor_kernels, fourier_kernels], dim=0)
+        cos_sim = F.cosine_similarity(learnable_flat.unsqueeze(1), all_fixed_kernels.unsqueeze(0), dim=2)
+        orthogonality_loss = torch.mean(cos_sim ** 2)
+        self.loss_ensemble['orth_loss'] = self.lambdas.get('orth', 0.1) * orthogonality_loss
         mix_l1_loss = torch.norm(model_module.mixing_weights, p=1)
-        self.loss_ensemble['weight_loss'] = self.lambdas['mix_l1'] * mix_l1_loss
-
+        self.loss_ensemble['weight_loss'] = self.lambdas.get('mix_l1', 1e-4) * mix_l1_loss
         total_loss = sum(self.loss_ensemble.values())
         return total_loss
 
@@ -141,7 +139,7 @@ class OneFoldTrainer:
             labels = labels.view(-1).to(self.device)
 
             outputs = self.model(inputs)
-            loss = self.compute_v2_loss(outputs, labels)
+            loss = self.compute_comprehensive_loss(outputs, labels)  # 调用新的损失函数
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -152,18 +150,22 @@ class OneFoldTrainer:
             correct += predicted.eq(labels).sum().item()
             self.train_iter += 1
 
-            # 使用 | 分隔符打印所有 loss
+            # ==========【核心修改】更新 progress_bar 的打印内容 ==========
+
+            # 为了防止KeyError，使用 .get(key, 0.0) 来安全地获取损失值
+            cls_val = self.loss_ensemble.get('cross_entropy', torch.tensor(0.0)).item()
+            clst_val = self.loss_ensemble.get('clst_loss', torch.tensor(0.0)).item()
+            sep_val = self.loss_ensemble.get('sep_loss', torch.tensor(0.0)).item()
+            g_spec_val = self.loss_ensemble.get('gabor_spec_loss', torch.tensor(0.0)).item()
+            f_spec_val = self.loss_ensemble.get('fourier_spec_loss', torch.tensor(0.0)).item()
+            orth_val = self.loss_ensemble.get('orth_loss', torch.tensor(0.0)).item()
+            l1_val = self.loss_ensemble.get('weight_loss', torch.tensor(0.0)).item()
+
             progress_bar(i, len(self.loader_dict['train']),
-                         'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls: %.3f | dist: %.3f | id: %.3f | gabor_f: %.3f | fourier_f: %.3f | G_l1: %.3f | F_l1: %.3f | mix_l1: %.3f'
+                         'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls: %.3f | clst: %.3f | sep: %.3f | g_spec: %.3f | f_spec: %.3f | orth: %.3f | L1: %.4f'
                          % (train_loss / (i + 1), 100. * correct / total, correct, total,
-                            self.loss_ensemble['cross_entropy'].item(),
-                            self.loss_ensemble['dist_loss'].item(),
-                            self.loss_ensemble['identity_loss'].item(),
-                            self.loss_ensemble['gabor_loss'].item(),
-                            self.loss_ensemble['Fourier_loss'].item(),
-                            self.loss_ensemble['Gabor_l1'].item(),
-                            self.loss_ensemble['Fourier_l1'].item(),
-                            self.loss_ensemble['weight_loss'].item()))
+                            cls_val, clst_val, sep_val, g_spec_val, f_spec_val, orth_val, l1_val))
+            # ===============================================================
 
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')
@@ -175,6 +177,7 @@ class OneFoldTrainer:
 
     @torch.no_grad()
     def evaluate(self, mode):
+        # ... (此函数保持不变)
         self.model.eval()
         correct, total, eval_loss = 0, 0, 0
         y_true = np.zeros(0)
@@ -184,16 +187,13 @@ class OneFoldTrainer:
             total += labels.size(0)
             inputs = inputs.to(self.device)
             labels = labels.view(-1).to(self.device)
-
             outputs = self.model(inputs)
-            loss = self.compute_v2_loss(outputs, labels)
-
+            loss = self.compute_comprehensive_loss(outputs, labels)  # 确保这里也调用新的损失函数
             eval_loss += loss.item()
             predicted = torch.argmax(outputs, 1)
             correct += predicted.eq(labels).sum().item()
             y_true = np.concatenate([y_true, labels.cpu().numpy()])
             y_pred = np.concatenate([y_pred, outputs.cpu().numpy()])
-
             progress_bar(i, len(self.loader_dict[mode]), f'Evaluating {mode} set...')
 
         y_pred_argmax = np.argmax(y_pred, 1)
@@ -212,13 +212,13 @@ class OneFoldTrainer:
             raise NotImplementedError
 
     def run(self):
+        # ... (此函数保持不变)
         for epoch in range(self.tp_cfg['max_epochs']):
             print('\n[INFO] Fold: {}, Epoch: {}'.format(self.fold, epoch))
             self.train_one_epoch(epoch)
             if self.early_stopping.early_stop:
                 print("[INFO] Early stopping triggered.")
                 break
-
         print("[INFO] Loading best model for final evaluation...")
         self.model.load_state_dict(torch.load(os.path.join(self.ckpt_path, self.ckpt_name)))
         y_true, y_pred, mf1 = self.evaluate(mode='test')
@@ -227,36 +227,29 @@ class OneFoldTrainer:
 
 
 def main():
-    # (main 函数保持不变)
+    # ... (此函数保持不变)
     warnings.filterwarnings("ignore", category=DeprecationWarning)
     warnings.filterwarnings("ignore", category=UserWarning)
-
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path',
                         default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
     args = parser.parse_args()
-
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-
     set_random_seed(args.seed, use_cuda=torch.cuda.is_available())
-
     with open(args.config) as config_file:
         config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
     config['mode'] = 'normal'
-
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
-
     for fold in range(1, config['dataset']['num_splits'] + 1):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
-
         summarize_result(config, fold, Y_true, Y_pred)
         break
 

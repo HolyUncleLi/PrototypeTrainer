@@ -8,33 +8,27 @@
         "target_idx": -1,
         "root_dir": "./"
     },
-
     "backbone": {
         "name": "ProtoP",
         "init_weights": false,
         "dropout": false
     },
-
     "feature_pyramid": {
         "dim": 1,
         "num_scales": 3
     },
-
     "classifier": {
         "name": "ProtoP",
-        "prototype_shape": [10, 128, 1],
+        "prototype_shape": [20, 128, 15],
         "feedforward_dim": 64,
-
-        "block_num": 6,  
-        "channel_num": 128,  
-        "kernel_size": 9,  
-        "repeat_num": 3,  
-        "strides_num": 1,  
+        "block_num": 6,
+        "channel_num": 128,
+        "kernel_size": 9,
+        "repeat_num": 3,
+        "strides_num": 1,
         "afr_reduced_dim": 128,
-
-        "prototype_num": 10,  
-        "feature_dim": 64,  
-
+        "prototype_num": 20,
+        "feature_dim": 64,
         "dist_lambda": 17.8373,
         "class_lambda": 50,
         "identity_lambda": 8.9351,
@@ -45,7 +39,6 @@
             "dropout": false
         }
     },
-
     "training_params": {
         "mode": "freezefinetune",
         "max_epochs": 200,
