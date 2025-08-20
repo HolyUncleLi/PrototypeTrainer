@@ -293,7 +293,8 @@ class ProtoPNet(nn.Module):
         fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)
         learnable_kernels = self.learnable_basis_bank.repeat(1, C, 1)
         base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learnable_kernels), dim=0)
-        composite_prototypes = torch.matmul(F.relu(self.mixing_weights), base_prototypes.flatten(1))
+        # composite_prototypes = torch.matmul(F.relu(self.mixing_weights), base_prototypes.flatten(1))
+        composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
         composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
 
         # 5. 使用交叉注意力计算距离和激活位置

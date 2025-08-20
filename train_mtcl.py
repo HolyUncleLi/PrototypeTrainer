@@ -42,9 +42,25 @@ class OneFoldTrainer:
         self.ckpt_name = 'ckpt_fold-{0:02d}.pth'.format(self.fold)
         self.early_stopping = EarlyStopping(patience=self.es_cfg['patience'], verbose=True, ckpt_path=self.ckpt_path,
                                             ckpt_name=self.ckpt_name, mode=self.es_cfg['mode'])
+        '''
         self.lambdas = {
-            'cls': self.cfg['classifier']['class_lambda'], 'dist': 0.1, 'identity': 0.05,
-            'gabor_spec': 0.01, 'fourier_spec': 0.01, 'orth': 0.1, 'mix_l1': 1e-3
+            'cls': self.cfg['classifier']['class_lambda'],
+            'dist': 0.1,
+            'identity': 0.05,
+            'gabor_spec': 0.01,
+            'fourier_spec': 0.01,
+            'orth': 0.1,
+            'mix_l1': 1e-3
+        }
+        '''
+        self.lambdas = {
+            'cls': self.cfg['classifier'].get('class_lambda', 1.0),
+            'dist': self.cfg['classifier'].get('dist_lambda', 0.1),
+            'identity': self.cfg['classifier'].get('identity_lambda', 0.05),
+            'gabor_spec': self.cfg['classifier'].get('gabor_spec_lambda', 0.01),  # 建议在json中也定义这些
+            'fourier_spec': self.cfg['classifier'].get('fourier_spec_lambda', 0.01),
+            'orth': self.cfg['classifier'].get('orth_lambda', 0.1),
+            'mix_l1': self.cfg['classifier'].get('weight_lambda', 1e-4)  # 确保键名'weight_lambda'与json一致
         }
         print(f"[INFO] Using loss lambdas: {self.lambdas}")
 
@@ -227,13 +243,13 @@ def main():
     config['mode'] = 'normal'
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
-    for fold in range(8, config['dataset']['num_splits'] + 1):
+    for fold in range(1, config['dataset']['num_splits'] + 1):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
-
+        break
 
 if __name__ == "__main__":
     main()

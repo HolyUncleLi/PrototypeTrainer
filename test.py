@@ -164,12 +164,20 @@ def main():
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
 
-        '''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
         plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
+
         '''
+        from visualize_single_prototype import visualize_prototypes_final, explain_single_sample_final
+        class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
+        visualize_prototypes_final(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
+        for i in range(10):
+            single_sample, _ = evaluator.loader_dict['test'].dataset[i]
+            explain_single_sample_final(evaluator.model, single_sample, evaluator.device, class_names)
+        '''
+
 
 
 if __name__ == "__main__":
