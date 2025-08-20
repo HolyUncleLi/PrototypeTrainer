@@ -163,20 +163,14 @@ def main():
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
-        # from visualize_prototype import generate_comprehensive_explanation_figures
-        from visualize_prototype import visualize_prototypes_final, explain_single_sample_final
+
+        '''
+        from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-        num = 0
-        visualize_prototypes_final(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
-        # generate_comprehensive_explanation_figures(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
+        generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
+        plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
         '''
-        for (x, y) in evaluator.loader_dict['test']:
-            print('true label: ', y[0].item())
-            visualize_prototypes_final(evaluator.model, x[0].unsqueeze(0), evaluator.device, class_names)
-            num += 1
-            if num > 10:
-                break
-        '''
+
 
 if __name__ == "__main__":
     main()
