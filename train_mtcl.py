@@ -54,13 +54,13 @@ class OneFoldTrainer:
         }
         '''
         self.lambdas = {
-            'cls': self.cfg['classifier'].get('class_lambda', 1.0),
-            'dist': self.cfg['classifier'].get('dist_lambda', 0.1),
-            'identity': self.cfg['classifier'].get('identity_lambda', 0.05),
-            'gabor_spec': self.cfg['classifier'].get('gabor_spec_lambda', 0.01),  # 建议在json中也定义这些
-            'fourier_spec': self.cfg['classifier'].get('fourier_spec_lambda', 0.01),
+            'cls': self.cfg['classifier'].get('class_lambda', 50),
+            'dist': self.cfg['classifier'].get('dist_lambda', 17),
+            'identity': self.cfg['classifier'].get('identity_lambda', 9),
+            'gabor_spec': self.cfg['classifier'].get('gabor_spec_lambda', 1.2),
+            'fourier_spec': self.cfg['classifier'].get('fourier_spec_lambda', 1.2),
             'orth': self.cfg['classifier'].get('orth_lambda', 0.1),
-            'mix_l1': self.cfg['classifier'].get('weight_lambda', 1e-4)  # 确保键名'weight_lambda'与json一致
+            'mix_l1': self.cfg['classifier'].get('weight_lambda', 0.3)
         }
         print(f"[INFO] Using loss lambdas: {self.lambdas}")
 
