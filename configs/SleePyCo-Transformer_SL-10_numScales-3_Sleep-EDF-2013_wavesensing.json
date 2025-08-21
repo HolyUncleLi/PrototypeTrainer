@@ -29,11 +29,16 @@
         "afr_reduced_dim": 128,
         "prototype_num": 20,
         "feature_dim": 64,
-        "dist_lambda": 17.8373,
+
         "class_lambda": 50,
+        "dist_lambda": 17.8373,
         "identity_lambda": 8.9351,
         "pd_lambda": 7.9252,
-        "weight_lambda": 0.3,
+        "gabor_spec_lambda": 3,
+        "fourier_spec_lambda":3,
+        "orth_lambda": 0.1,
+        "weight_lambda": 0.005,
+
         "num_classes": 5,
         "pos_enc": {
             "dropout": false
