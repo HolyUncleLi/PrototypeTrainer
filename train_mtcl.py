@@ -22,11 +22,11 @@ CLASS_WEIGHT = [1, 1.5, 1, 1, 1]
 
 class OneFoldTrainer:
     def __init__(self, args, fold, config):
-        self.args = args;
-        self.fold = fold;
+        self.args = args
+        self.fold = fold
         self.cfg = config
-        self.ds_cfg = config['dataset'];
-        self.tp_cfg = config['training_params'];
+        self.ds_cfg = config['dataset']
+        self.tp_cfg = config['training_params']
         self.es_cfg = self.tp_cfg['early_stopping']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print('[INFO] Config name: {}'.format(config['name']))
@@ -57,6 +57,7 @@ class OneFoldTrainer:
             'cls': self.cfg['classifier'].get('class_lambda', 50),
             'dist': self.cfg['classifier'].get('dist_lambda', 17),
             'identity': self.cfg['classifier'].get('identity_lambda', 9),
+            'diversity': self.cfg['classifier'].get('diversity_lambda', 1.0),
             'gabor_spec': self.cfg['classifier'].get('gabor_spec_lambda', 1.2),
             'fourier_spec': self.cfg['classifier'].get('fourier_spec_lambda', 1.2),
             'orth': self.cfg['classifier'].get('orth_lambda', 0.1),
@@ -123,6 +124,38 @@ class OneFoldTrainer:
         diff_class_distances = inverted_distances + diff_class_log_mask
         max_diff_class_dist = torch.max(diff_class_distances, dim=1).values
 
+        # 【新增代码段开始】
+        # --- 计算原型多样性损失 ---
+        model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+
+        # 1. 获取最终的组合原型 (形状: [num_prototypes, feature_dim])
+        # 注意: 这里需要获取原型本身，而不是通过混合权重重新计算。
+        # 幸运的是，您的模型结构中，组合原型是动态计算的，所以我们需要拿到它们
+        gabor_kernels = model_module.gabor_basis_bank.get_kernels()
+        fourier_kernels = model_module.fourier_basis_bank.get_kernels()
+        learnable_kernels = model_module.learnable_basis_bank
+        base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learnable_kernels), dim=0).squeeze(1)
+
+        # 如果您去掉了relu，就直接用mixing_weights
+        # weights = F.relu(model_module.mixing_weights)
+        weights = model_module.mixing_weights
+
+        composite_prototypes = torch.matmul(weights, base_prototypes)  # 形状: [20, 15] 假设原型长度为15
+
+        # 2. 归一化原型，计算余弦相似度矩阵
+        prototypes_normalized = F.normalize(composite_prototypes, p=2, dim=1)
+        similarity_matrix = torch.matmul(prototypes_normalized, prototypes_normalized.t())
+
+        # 3. 我们只惩罚非对角线上的相似度（即不同原型间的相似度）
+        # 创建一个对角线为0，其余为1的掩码
+        mask = 1 - torch.eye(model_module.num_composite_prototypes, device=self.device)
+
+        # 使用掩码去除对角线元素，并取平均值作为损失
+        # 我们希望相似度接近0，所以直接将相似度的平方作为损失
+        diversity_loss = torch.mean((similarity_matrix * mask) ** 2)
+        self.loss_ensemble['diversity_loss'] = self.lambdas.get('diversity', 1.0) * diversity_loss
+        # 【新增代码段结束】
+
         # 3. 修正分离损失的逻辑：我们要最大化最近的异类距离，即最小化其负值
         sep_loss = torch.mean(-max_diff_class_dist)
         self.loss_ensemble['sep_loss'] = self.lambdas['identity'] * sep_loss
@@ -153,31 +186,32 @@ class OneFoldTrainer:
         correct, total, train_loss = 0, 0, 0
         self.model.train()
         for i, (inputs, labels) in enumerate(self.loader_dict['train']):
-            total += labels.size(0);
-            inputs = inputs.to(self.device);
+            total += labels.size(0)
+            inputs = inputs.to(self.device)
             labels = labels.view(-1).to(self.device)
             outputs = self.model(inputs)
             loss = self.compute_comprehensive_loss(outputs, labels)
-            self.optimizer.zero_grad();
-            loss.backward();
+            self.optimizer.zero_grad()
+            loss.backward()
             self.optimizer.step()
-            train_loss += loss.item();
-            predicted = torch.argmax(outputs, 1);
+            train_loss += loss.item()
+            predicted = torch.argmax(outputs, 1)
             correct += predicted.eq(labels).sum().item()
             self.train_iter += 1
             cls_val = self.loss_ensemble.get('cross_entropy', torch.tensor(0.0)).item()
             clst_val = self.loss_ensemble.get('clst_loss', torch.tensor(0.0)).item()
+            diversity_val = self.loss_ensemble.get('diversity_loss', torch.tensor(0.0)).item()
             sep_val = self.loss_ensemble.get('sep_loss', torch.tensor(0.0)).item()
             g_spec_val = self.loss_ensemble.get('gabor_spec_loss', torch.tensor(0.0)).item()
             f_spec_val = self.loss_ensemble.get('fourier_spec_loss', torch.tensor(0.0)).item()
             orth_val = self.loss_ensemble.get('orth_loss', torch.tensor(0.0)).item()
             l1_val = self.loss_ensemble.get('weight_loss', torch.tensor(0.0)).item()
             progress_bar(i, len(self.loader_dict['train']),
-                         'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls: %.3f | clst: %.3f | sep: %.3f | g_spec: %.3f | f_spec: %.3f | orth: %.3f | L1: %.4f'
+                         'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls: %.3f | clst: %.3f | div: %.3f | sep: %.3f | g_spec: %.3f | f_spec: %.3f | orth: %.3f | L1: %.4f'
                          % (train_loss / (i + 1), 100. * correct / total, correct, total,
-                            cls_val, clst_val, sep_val, g_spec_val, f_spec_val, orth_val, l1_val))
+                            cls_val, clst_val, diversity_val, sep_val, g_spec_val, f_spec_val, orth_val, l1_val))
             if self.train_iter % self.tp_cfg['val_period'] == 0:
-                print('');
+                print('')
                 val_acc, val_loss, val_mf1 = self.evaluate(mode='val')
                 self.early_stopping(val_mf1, val_loss, self.model)
                 self.activate_train_mode()
@@ -185,20 +219,20 @@ class OneFoldTrainer:
 
     @torch.no_grad()
     def evaluate(self, mode):
-        self.model.eval();
+        self.model.eval()
         correct, total, eval_loss = 0, 0, 0
-        y_true = np.zeros(0);
+        y_true = np.zeros(0)
         y_pred = np.zeros((0, self.cfg['classifier']['num_classes']))
         for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
-            total += labels.size(0);
-            inputs = inputs.to(self.device);
+            total += labels.size(0)
+            inputs = inputs.to(self.device)
             labels = labels.view(-1).to(self.device)
             outputs = self.model(inputs)
             loss = self.compute_comprehensive_loss(outputs, labels)
-            eval_loss += loss.item();
-            predicted = torch.argmax(outputs, 1);
+            eval_loss += loss.item()
+            predicted = torch.argmax(outputs, 1)
             correct += predicted.eq(labels).sum().item()
-            y_true = np.concatenate([y_true, labels.cpu().numpy()]);
+            y_true = np.concatenate([y_true, labels.cpu().numpy()])
             y_pred = np.concatenate([y_pred, outputs.cpu().numpy()])
             progress_bar(i, len(self.loader_dict[mode]), f'Evaluating {mode} set...')
         y_pred_argmax = np.argmax(y_pred, 1)

@@ -1,3 +1,4 @@
+
 {
     "dataset": {
         "name": "Sleep-EDF-2013",
@@ -32,12 +33,13 @@
 
         "class_lambda": 50,
         "dist_lambda": 17.8373,
+        "diversity_lambda": 1.0,
         "identity_lambda": 8.9351,
         "pd_lambda": 7.9252,
-        "gabor_spec_lambda": 3,
-        "fourier_spec_lambda":3,
+        "gabor_spec_lambda": 1.5,
+        "fourier_spec_lambda": 1.5,
         "orth_lambda": 0.1,
-        "weight_lambda": 0.005,
+        "weight_lambda": 0.001,
 
         "num_classes": 5,
         "pos_enc": {
