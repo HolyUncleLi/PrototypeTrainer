@@ -123,6 +123,8 @@ class OneFoldTrainer:
         diff_class_log_mask = torch.log(1 - class_mask)  # 错误为0, 正确为-inf
         diff_class_distances = inverted_distances + diff_class_log_mask
         max_diff_class_dist = torch.max(diff_class_distances, dim=1).values
+        sep_loss = torch.mean(max_diff_class_dist)
+        self.loss_ensemble['sep_loss'] = self.lambdas['identity'] * sep_loss
 
         # 【新增代码段开始】
         # --- 计算原型多样性损失 ---
@@ -154,12 +156,6 @@ class OneFoldTrainer:
         # 我们希望相似度接近0，所以直接将相似度的平方作为损失
         diversity_loss = torch.mean((similarity_matrix * mask) ** 2)
         self.loss_ensemble['diversity_loss'] = self.lambdas.get('diversity', 1.0) * diversity_loss
-        # 【新增代码段结束】
-
-        # 3. 修正分离损失的逻辑：我们要最大化最近的异类距离，即最小化其负值
-        sep_loss = torch.mean(-max_diff_class_dist)
-        self.loss_ensemble['sep_loss'] = self.lambdas['identity'] * sep_loss
-        # ========== 【修正结束】 ==========
 
         gabor_bank = model_module.gabor_basis_bank
         fourier_bank = model_module.fourier_basis_bank

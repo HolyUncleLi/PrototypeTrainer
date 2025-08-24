@@ -33,7 +33,7 @@
 
         "class_lambda": 50,
         "dist_lambda": 17.8373,
-        "diversity_lambda": 1.0,
+        "diversity_lambda": 5.0,
         "identity_lambda": 8.9351,
         "pd_lambda": 7.9252,
         "gabor_spec_lambda": 1.5,
