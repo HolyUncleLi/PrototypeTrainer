@@ -279,7 +279,7 @@ def main():
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
-        break
+
 
 if __name__ == "__main__":
     main()
