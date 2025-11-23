@@ -51,7 +51,8 @@ class OneFoldTrainer:
             'gabor_spec': self.cfg['classifier'].get('gabor_spec_lambda', 1.2),
             'fourier_spec': self.cfg['classifier'].get('fourier_spec_lambda', 1.2),
             'orth': self.cfg['classifier'].get('orth_lambda', 0.1),
-            'mix_l1': self.cfg['classifier'].get('weight_lambda', 0.3)
+            # 这个参数控制结构化正则的强度，值越大，热力图越接近完美的块对角
+            'structure': self.cfg['classifier'].get('structure_lambda', 5.0)
         }
         print(f"[INFO] Using loss lambdas: {self.lambdas}")
 
@@ -61,7 +62,6 @@ class OneFoldTrainer:
         if len(self.args.gpu.split(",")) > 1:
             model = torch.nn.DataParallel(model, device_ids=list(range(len(self.args.gpu.split(",")))))
         model.to(self.device)
-        print('[INFO] Model prepared, Device used: {} GPU:{}'.format(self.device, self.args.gpu))
         return model
 
     def build_dataloader(self):
@@ -74,7 +74,6 @@ class OneFoldTrainer:
         test_dataset = EEGDataLoader(self.cfg, self.fold, set='test')
         test_loader = DataLoader(dataset=test_dataset, batch_size=self.tp_cfg['batch_size'], shuffle=False,
                                  num_workers=4 * len(self.args.gpu.split(",")), pin_memory=True)
-        print('[INFO] Dataloader prepared')
         return {'train': train_loader, 'val': val_loader, 'test': test_loader}
 
     def activate_train_mode(self):
@@ -84,58 +83,51 @@ class OneFoldTrainer:
         self.loss_ensemble = {}
         model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
-        # 1. 分类损失
+        # 1. Cls Loss
         cross_entropy = self.criterion(outputs, labels)
         self.loss_ensemble['cross_entropy'] = self.lambdas['cls'] * cross_entropy
 
+        # 2. Cluster / Sep Loss
         min_dist = model_module.min_distance
         num_prototypes = model_module.num_composite_prototypes
         num_classes = model_module.fc.out_features
         num_prototypes_per_class = num_prototypes // num_classes
 
-        # 2. 聚类与分离损失
         prototype_class_identity = torch.zeros(num_prototypes, num_classes, device=self.device)
         for j in range(num_classes):
             prototype_class_identity[j * num_prototypes_per_class: (j + 1) * num_prototypes_per_class, j] = 1
 
-        class_mask = prototype_class_identity.T[labels].to(self.device)  # [Batch, Num_Proto]
+        class_mask = prototype_class_identity.T[labels].to(self.device)
         inverted_distances = -min_dist
 
-        # 同类距离 (Clustering)
         same_class_log_mask = torch.log(class_mask + 1e-9)
         same_class_distances = inverted_distances + same_class_log_mask
         max_same_class_dist = torch.max(same_class_distances, dim=1).values
         clst_loss = torch.mean(-max_same_class_dist)
         self.loss_ensemble['clst_loss'] = self.lambdas['dist'] * clst_loss
 
-        # 异类距离 (Separation)
         diff_class_log_mask = torch.log(1 - class_mask + 1e-9)
         diff_class_distances = inverted_distances + diff_class_log_mask
         max_diff_class_dist = torch.max(diff_class_distances, dim=1).values
         sep_loss = torch.mean(max_diff_class_dist)
         self.loss_ensemble['sep_loss'] = self.lambdas['identity'] * sep_loss
 
-        # 3. 原型多样性损失
-        # 获取所有基础 Basis
+        # 3. Diversity Loss
         gabor_kernels = model_module.gabor_basis_bank.get_kernels()
         fourier_kernels = model_module.fourier_basis_bank.get_kernels()
         learnable_kernels = model_module.learnable_basis_bank
         base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learnable_kernels), dim=0).squeeze(1)
 
-        # 通过 Property 获取完整的 Block-Diagonal Mixing Weights
-        full_weights = model_module.mixing_weights
+        weights = model_module.mixing_weights
+        composite_prototypes = torch.matmul(weights, base_prototypes)
 
-        # 计算复合原型
-        composite_prototypes = torch.matmul(full_weights, base_prototypes)
-
-        # 计算余弦相似度并惩罚非对角元素
         prototypes_normalized = F.normalize(composite_prototypes, p=2, dim=1)
         similarity_matrix = torch.matmul(prototypes_normalized, prototypes_normalized.t())
-        mask = 1 - torch.eye(num_prototypes, device=self.device)
-        diversity_loss = torch.mean((similarity_matrix * mask) ** 2)
+        mask_diag = 1 - torch.eye(num_prototypes, device=self.device)
+        diversity_loss = torch.mean((similarity_matrix * mask_diag) ** 2)
         self.loss_ensemble['diversity_loss'] = self.lambdas.get('diversity', 1.0) * diversity_loss
 
-        # 4. Gabor & Fourier 约束
+        # 4. Filter Specific Loss
         gabor_bank = model_module.gabor_basis_bank
         gabor_mu_loss = torch.mean(gabor_bank.mu ** 2)
         gabor_sigma_loss = torch.mean(F.relu(gabor_bank.sigma - 0.5))
@@ -146,7 +138,7 @@ class OneFoldTrainer:
         fourier_amp_variance_loss = torch.var(fourier_bank.A)
         self.loss_ensemble['fourier_spec_loss'] = self.lambdas.get('fourier_spec', 0.01) * fourier_amp_variance_loss
 
-        # 5. 正交性与 L1 约束
+        # 5. Orthogonality
         gabor_kernels_flat = gabor_bank.get_kernels().detach().flatten(1)
         fourier_kernels_flat = fourier_bank.get_kernels().detach().flatten(1)
         learnable_flat = learnable_kernels.flatten(1)
@@ -155,11 +147,25 @@ class OneFoldTrainer:
         orthogonality_loss = torch.mean(cos_sim ** 2)
         self.loss_ensemble['orth_loss'] = self.lambdas.get('orth', 0.1) * orthogonality_loss
 
-        # L1 Loss: 直接对三个权重矩阵求 Norm 和
-        mix_l1_loss = (torch.norm(model_module.mix_gabor, p=1) +
-                       torch.norm(model_module.mix_fourier, p=1) +
-                       torch.norm(model_module.mix_learn, p=1))
-        self.loss_ensemble['weight_loss'] = self.lambdas.get('mix_l1', 1e-4) * mix_l1_loss
+        # --- 6. 核心修改：Structure Regularization Loss ---
+        # 动态构建一个掩码，对角块区域为0（允许混合），其他区域为1（惩罚混合）
+        splits = model_module.proto_splits  # [nG, nF, nL]
+        basis_counts = [model_module.num_gabor_basis, model_module.num_fourier_basis, model_module.num_learnable_basis]
+
+        structure_mask = torch.ones_like(weights)
+
+        # 挖去对角块
+        row_start = 0
+        col_start = 0
+        for r_count, c_count in zip(splits, basis_counts):
+            structure_mask[row_start: row_start + r_count, col_start: col_start + c_count] = 0
+            row_start += r_count
+            col_start += c_count
+
+        # 计算 Loss: 惩罚非对角区域权重的绝对值
+        # 这样模型会尽量让 structure_mask 为 1 的区域权重变小
+        structure_loss = torch.mean(torch.abs(weights) * structure_mask)
+        self.loss_ensemble['structure_loss'] = self.lambdas.get('structure', 5.0) * structure_loss
 
         total_loss = sum(self.loss_ensemble.values())
         return total_loss
@@ -181,15 +187,14 @@ class OneFoldTrainer:
             correct += predicted.eq(labels).sum().item()
             self.train_iter += 1
 
-            # Logging
             cls_val = self.loss_ensemble.get('cross_entropy', torch.tensor(0.0)).item()
             clst_val = self.loss_ensemble.get('clst_loss', torch.tensor(0.0)).item()
             diversity_val = self.loss_ensemble.get('diversity_loss', torch.tensor(0.0)).item()
-            sep_val = self.loss_ensemble.get('sep_loss', torch.tensor(0.0)).item()
+            struc_val = self.loss_ensemble.get('structure_loss', torch.tensor(0.0)).item()
             progress_bar(i, len(self.loader_dict['train']),
-                         'Loss: %.3f | Acc: %.3f%% | cls: %.3f | clst: %.3f | div: %.3f | sep: %.3f'
+                         'Loss: %.3f | Acc: %.3f%% | cls: %.3f | clst: %.3f | div: %.3f | struc: %.3f'
                          % (train_loss / (i + 1), 100. * correct / total,
-                            cls_val, clst_val, diversity_val, sep_val))
+                            cls_val, clst_val, diversity_val, struc_val))
 
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')

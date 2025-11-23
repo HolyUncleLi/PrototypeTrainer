@@ -14,6 +14,7 @@ import json
 # ====================================================================
 # 1. 基础模块 (保持不变)
 # ====================================================================
+# ... (ResidualBlock, EEGNetProto_Slim, GaborFilterBank, FourierFilterBank, TCNBlock, EnhancedTCN 保持不变，此处省略以节省篇幅，请保留原有的这些类) ...
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
@@ -140,25 +141,25 @@ class EnhancedTCN(nn.Module):
 
 
 # ====================================================================
-# 2. 核心高级模块 (已修改)
+# 2. 核心高级模块
 # ====================================================================
 
 class MultiLatentSpaceSimilarity(nn.Module):
     """
-    【核心修改】多潜空间相似度模块。
-    为 Gabor, Fourier, Learnable 族群分别维护独立的 Query/Key/Value 投影，
-    强制它们在不同的潜在空间中进行匹配。
+    多潜空间相似度模块。
+    该模块为 Gabor, Fourier, Learnable 族群分别维护独立的 Query/Key/Value 投影。
+    这样做的目的是让模型能够针对不同的特征类型（时域 vs 频域）学习不同的匹配空间。
     """
 
     def __init__(self, dim, splits, heads=4, dim_head=32):
         super().__init__()
-        self.splits = splits  # [n_gabor, n_fourier, n_learnable]
+        self.splits = splits  # e.g., [7, 7, 6]
         self.heads = heads
         self.scale = dim_head ** -0.5
         inner_dim = dim_head * heads
 
         # 为三个族群定义独立的三组投影矩阵
-        # 索引 0: Gabor, 1: Fourier, 2: Learnable
+        # 索引 0: Gabor Space, 1: Fourier Space, 2: Learnable Space
         self.q_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
         self.k_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
         self.v_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
@@ -169,60 +170,54 @@ class MultiLatentSpaceSimilarity(nn.Module):
         batch_size, C, seq_len = x.shape
         _, _, proto_len = prototypes.shape
 
-        # 输入转置
+        # 信号转置
         x_perm = x.permute(0, 2, 1)
 
-        # 根据 splits 将所有原型切分为三组 (Gabor, Fourier, Learnable)
+        # 【关键步骤】
+        # 这里我们将所有复合原型根据 splits 切分成三组。
+        # 第一组会被强制送入 Gabor 潜空间 (q_projs[0], k_projs[0]) 进行匹配
+        # 这就是“引导”模型学习不同空间的物理机制。
         proto_groups = torch.split(prototypes, self.splits, dim=0)
 
         all_distances = []
         all_indices = []
 
-        # 遍历三个族群，分别在各自的子空间计算 Attention
         for i, p_group in enumerate(proto_groups):
             num_p_group = p_group.shape[0]
             if num_p_group == 0: continue
 
             # 1. 投影 Query (原型) -> 使用族群专有的 Q 投影
-            p_perm = p_group.permute(0, 2, 1)  # [Num_P, L_proto, C]
-            replicated_p = p_perm.unsqueeze(0).repeat(batch_size, 1, 1, 1)  # [B, Num_P, L_proto, C]
+            p_perm = p_group.permute(0, 2, 1)
+            replicated_p = p_perm.unsqueeze(0).repeat(batch_size, 1, 1, 1)
             q = self.q_projs[i](replicated_p)
 
             # 2. 投影 Key, Value (信号) -> 使用族群专有的 K, V 投影
-            # 这里的关键是：同一个信号 x 被映射到了三个不同的潜在空间
+            # 意味着同一个信号 x 在面对不同原型时，会展现出不同的特征面貌
             k = self.k_projs[i](x_perm)
             v = self.v_projs[i](x_perm)
 
-            # Reshape Q: [B, Num_P, L_proto, Heads, D] -> [B*Heads*Num_P, L_proto, D]
+            # --- 标准的 Attention 计算 ---
             q = q.view(batch_size, num_p_group, proto_len, self.heads, -1).permute(0, 3, 1, 2, 4)
             q_reshaped = q.reshape(batch_size * self.heads * num_p_group, proto_len, -1)
 
-            # Reshape K, V: [B, L_seq, Heads, D] -> [B, Heads, L_seq, D]
             k = k.view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
             v = v.view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
 
-            # Expand K, V to match Num_P dimension for batch matmul
             k_reshaped = k.unsqueeze(2).repeat(1, 1, num_p_group, 1, 1).reshape(batch_size * self.heads * num_p_group,
                                                                                 seq_len, -1)
             v_reshaped = v.unsqueeze(2).repeat(1, 1, num_p_group, 1, 1).reshape(batch_size * self.heads * num_p_group,
                                                                                 seq_len, -1)
 
-            # 3. Attention Calculation
             dots = torch.bmm(q_reshaped, k_reshaped.transpose(-1, -2)) * self.scale
             attn = dots.softmax(dim=-1)
-            out = torch.bmm(attn, v_reshaped)  # [..., L_proto, D]
+            out = torch.bmm(attn, v_reshaped)
 
-            # 4. Reconstruct shape and Calculate Distance
+            # 重构与距离计算
             out = out.view(batch_size, self.heads, num_p_group, proto_len, -1).permute(0, 2, 3, 1, 4).reshape(
                 batch_size, num_p_group, proto_len, -1)
-
-            # Target: Original Query projected in latent space
             original_q_projected = self.q_projs[i](replicated_p)
+            dist = F.mse_loss(original_q_projected, out, reduction='none').mean(dim=[2, 3])
 
-            # Distance: MSE in latent space
-            dist = F.mse_loss(original_q_projected, out, reduction='none').mean(dim=[2, 3])  # [B, Num_P]
-
-            # Indices for visualization
             attn_map = attn.view(batch_size, self.heads, num_p_group, proto_len, seq_len)
             heatmap = attn_map.mean(dim=[1, 3])
             indices = heatmap.argmax(dim=-1)
@@ -230,7 +225,6 @@ class MultiLatentSpaceSimilarity(nn.Module):
             all_distances.append(dist)
             all_indices.append(indices)
 
-        # 拼接回 [B, Total_Num_P]
         final_distances = torch.cat(all_distances, dim=1)
         final_indices = torch.cat(all_indices, dim=1)
 
@@ -238,7 +232,7 @@ class MultiLatentSpaceSimilarity(nn.Module):
 
 
 # ====================================================================
-# 3. 最终模型 (已修改)
+# 3. 最终模型 (软约束版本)
 # ====================================================================
 class ProtoPNet(nn.Module):
     def __init__(self, config):
@@ -272,7 +266,7 @@ class ProtoPNet(nn.Module):
 
         self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
-        # --- 使用多潜空间模块 ---
+        # 多潜空间模块：负责将不同组的原型映射到不同空间
         self.similarity_calculator = MultiLatentSpaceSimilarity(
             dim=afr_reduced_cnn_size,
             splits=self.proto_splits,
@@ -289,48 +283,26 @@ class ProtoPNet(nn.Module):
         self.learnable_basis_bank = nn.Parameter(torch.randn(self.num_learnable_basis, 1, self.prototype_kernel_size))
         nn.init.xavier_uniform_(self.learnable_basis_bank)
 
-        # --- 核心修改: 独立的混合权重 (Block Diagonal) ---
-        # 以前是一个大矩阵，现在拆分，强制显式解耦
-        self.mix_gabor = nn.Parameter(torch.rand(n_g, self.num_gabor_basis))
-        self.mix_fourier = nn.Parameter(torch.rand(n_f, self.num_fourier_basis))
-        self.mix_learn = nn.Parameter(torch.rand(n_l, self.num_learnable_basis))
+        # --- 核心修改：恢复全连接混合权重 ---
+        # 我们不再拆分矩阵，而是保留一个完整的 learnable 矩阵。
+        # 结构化（Structure）将由 Loss 函数在训练中诱导产生，而不是强制为 0。
+        num_total_basis = self.num_gabor_basis + self.num_fourier_basis + self.num_learnable_basis
+        self.mixing_weights = nn.Parameter(torch.randn(self.num_composite_prototypes, num_total_basis) * 0.01)
 
-        nn.init.xavier_uniform_(self.mix_gabor)
-        nn.init.xavier_uniform_(self.mix_fourier)
-        nn.init.xavier_uniform_(self.mix_learn)
+        # 初始化技巧：为了帮助模型更快收敛，我们可以稍微增大“期望对角块”的初始值
+        # 这不是强制约束，只是一个好的初始点
+        with torch.no_grad():
+            # Gabor Block
+            self.mixing_weights[0:n_g, 0:self.num_gabor_basis].add_(0.1)
+            # Fourier Block
+            self.mixing_weights[n_g:n_g + n_f, self.num_gabor_basis:self.num_gabor_basis + self.num_fourier_basis].add_(
+                0.1)
+            # Learnable Block
+            self.mixing_weights[n_g + n_f:, self.num_gabor_basis + self.num_fourier_basis:].add_(0.1)
 
         self.bn = nn.BatchNorm1d(self.num_composite_prototypes)
         self.fc = nn.Linear(self.num_composite_prototypes, num_classes)
         self.min_distance, self.min_indices = None, None
-
-    @property
-    def mixing_weights(self):
-        """
-        动态构建完整的混合权重矩阵 [Total_Composite, Total_Basis]。
-        非对角块填充为0，形成完美的阶梯状热力图。
-        """
-        device = self.mix_gabor.device
-
-        # 1. Gabor Block: [mix_gabor, 0, 0]
-        g_block = torch.cat([
-            self.mix_gabor,
-            torch.zeros(self.proto_splits[0], self.num_fourier_basis + self.num_learnable_basis, device=device)
-        ], dim=1)
-
-        # 2. Fourier Block: [0, mix_fourier, 0]
-        f_block = torch.cat([
-            torch.zeros(self.proto_splits[1], self.num_gabor_basis, device=device),
-            self.mix_fourier,
-            torch.zeros(self.proto_splits[1], self.num_learnable_basis, device=device)
-        ], dim=1)
-
-        # 3. Learnable Block: [0, 0, mix_learn]
-        l_block = torch.cat([
-            torch.zeros(self.proto_splits[2], self.num_gabor_basis + self.num_fourier_basis, device=device),
-            self.mix_learn
-        ], dim=1)
-
-        return torch.cat([g_block, f_block, l_block], dim=0)
 
     def forward(self, x, return_indices=False):
         stem_features = self.stem(x)
@@ -339,20 +311,23 @@ class ProtoPNet(nn.Module):
 
         C = temporal_features.shape[1]
 
-        # 分别获取并重复 Basis Kernels
-        gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)  # [20, C, K]
-        fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)  # [20, C, K]
-        learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)  # [10, C, K]
+        # 1. 获取所有 Basis Kernel
+        gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)
+        fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)
+        learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)
 
-        # 分组混合: 每个组只使用自己对应的 Basis
-        comp_g = torch.matmul(self.mix_gabor, gabor_kernels.flatten(1)).view(self.proto_splits[0], C, -1)
-        comp_f = torch.matmul(self.mix_fourier, fourier_kernels.flatten(1)).view(self.proto_splits[1], C, -1)
-        comp_l = torch.matmul(self.mix_learn, learn_kernels.flatten(1)).view(self.proto_splits[2], C, -1)
+        base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learn_kernels), dim=0)
 
-        # 拼接用于计算 (Calculator 内部会再次切分并投影到不同空间)
-        all_prototypes = torch.cat([comp_g, comp_f, comp_l], dim=0)
+        # 2. 生成所有复合原型 (全连接混合)
+        # 此时，第 0 个原型可能包含 Fourier 成分，这是允许的，但我们会通过 Loss 惩罚它
+        composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
+        composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
 
-        min_distance, min_indices = self.similarity_calculator(temporal_features, all_prototypes)
+        # 3. 多潜空间匹配
+        # 在这里，我们将 composite_prototypes 切分。
+        # 只有前 n_g 个原型会被送入 "Gabor 潜空间" (Similarity Calculator 内部逻辑)。
+        # 如果训练得当，mixing_weights 会让前 n_g 个原型主要由 Gabor Basis 组成。
+        min_distance, min_indices = self.similarity_calculator(temporal_features, composite_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
 
         similarity = torch.log((self.min_distance + 1) / (self.min_distance + 1e-4))
