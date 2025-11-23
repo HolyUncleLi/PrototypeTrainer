@@ -7,8 +7,10 @@ import random
 import numpy as np
 from ray import tune
 import sklearn.metrics as skmet
+from sklearn.metrics import confusion_matrix
 from terminaltables import SingleTable
 from termcolor import colored
+import matplotlib.pyplot as plt
 
 
 # _, term_width = os.popen('stty size', 'r').read().split()
@@ -263,3 +265,45 @@ def set_random_seed(seed_value, use_cuda=True):
         torch.cuda.manual_seed_all(seed_value) # gpu vars
         torch.backends.cudnn.deterministic = True  #needed
         torch.backends.cudnn.benchmark = False
+
+
+def cm_plot(cm, savepath):
+    # 假设 cm 为 5x5 的原始混淆矩阵（样本数量）
+    cm_new = np.zeros((5, 5))
+    for x in range(5):
+        t = cm.sum(axis=1)[x]
+        for y in range(5):
+            # 避免除以零
+            cm_new[x][y] = round(cm[x][y] / t * 100, 2) if t != 0 else 0
+
+    # 绘制混淆矩阵（显示百分比）
+    plt.matshow(cm_new, cmap=plt.cm.Blues)
+    plt.colorbar()
+
+    # 设定阈值：百分比大于最大值的一半时，文字显示为白色
+    threshold = cm_new.max() / 2.0
+
+    # 在每个单元格内注释两行文字：第一行百分比，第二行原始样本数
+    for x in range(5):
+        for y in range(5):
+            text = f"{cm_new[x][y]}%\n({int(cm[x][y])})"
+            color = "white" if cm_new[x, y] > threshold else "black"
+            plt.annotate(text,
+                         xy=(y, x),
+                         horizontalalignment='center',
+                         verticalalignment='center',
+                         fontsize=10,
+                         color=color)
+
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+
+    # 坐标轴标签只显示类别名称，不显示任何额外信息
+    categories = ["W", "N1", "N2", "N3", "REM"]
+    ticks = [0, 1, 2, 3, 4]
+    plt.xticks(ticks, categories)
+    plt.yticks(ticks, categories)
+
+    plt.tight_layout()
+    plt.savefig(savepath, bbox_inches='tight')
+    plt.close()

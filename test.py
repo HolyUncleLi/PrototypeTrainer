@@ -7,18 +7,11 @@ import warnings
 import numpy as np
 import sklearn.metrics as skmet
 from collections import OrderedDict  # *** 步骤 1: 在这里添加导入 ***
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-
-# ====================================================================
-# 关键导入:
-# 确保导入了正确的辅助函数、数据加载器和我们最终确定的 V2 模型
-# ====================================================================
 from utils import *
 from loader import EEGDataLoader
-# 您的模型文件名是 protop_cross.py，所以这里保持不变
 from models.protop_cross import ProtoPNet
 
 warnings.filterwarnings("ignore")
@@ -136,7 +129,6 @@ class OneFoldEvaluator:
         return y_true, y_pred, mf1
 
 
-# (main 函数保持不变)
 def main():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -155,6 +147,9 @@ def main():
     config['mode'] = 'normal'
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
+
+    cm = []
+
     for fold in range(1, config['dataset']['num_splits'] + 1):
         evaluator = OneFoldEvaluator(args, fold, config)
         y_true, y_pred, mf1 = evaluator.run()
@@ -164,12 +159,18 @@ def main():
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
 
+        '''绘制混淆矩阵'''
+        cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
+
+        '''绘制原型模板图像 & 混合矩阵热力图'''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
         plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
 
+
         '''
+        # 原生版本，弃用
         from visualize_single_prototype import visualize_prototypes_final, explain_single_sample_final
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         visualize_prototypes_final(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
@@ -178,6 +179,8 @@ def main():
             explain_single_sample_final(evaluator.model, single_sample, evaluator.device, class_names)
         '''
 
+    mean_cm = np.mean(cm, axis=0)
+    cm_plot(mean_cm, './results/cm.svg')
 
 
 if __name__ == "__main__":

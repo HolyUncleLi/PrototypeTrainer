@@ -1,4 +1,4 @@
-# --- protop_cross_final_attention.py ---
+# --- protop_cross.py ---
 
 import math
 import torch
@@ -12,14 +12,10 @@ import json
 
 
 # ====================================================================
-# 1. 基础模块
+# 1. 基础模块 (保持不变)
 # ====================================================================
 
 class ResidualBlock(nn.Module):
-    """
-    一个标准的残差块。
-    """
-
     def __init__(self, in_channels, out_channels, stride=1):
         super(ResidualBlock, self).__init__()
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=7, stride=stride, padding=3, bias=False)
@@ -43,15 +39,9 @@ class ResidualBlock(nn.Module):
 
 
 class EEGNetProto_Slim(nn.Module):
-    """
-    一个参数量优化后的轻量级特征提取器主干，用于处理由Stem输出的短序列。
-    """
-
     def __init__(self, input_channels, afr_reduced_cnn_size, block, num_blocks, fixed_output_size=256):
         super(EEGNetProto_Slim, self).__init__()
         self.in_channels = input_channels
-
-        # 构建残差层 (32 -> 32 -> 64 -> 128)
         self.layer1 = self._make_layer(block, 32, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 64, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 128, num_blocks[2], stride=2)
@@ -81,10 +71,6 @@ class EEGNetProto_Slim(nn.Module):
 
 
 class GaborFilterBank(nn.Module):
-    """
-    Gabor 基础原型库。
-    """
-
     def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
         super().__init__()
         self.num, self.ks = num_filters, kernel_size
@@ -105,10 +91,6 @@ class GaborFilterBank(nn.Module):
 
 
 class FourierFilterBank(nn.Module):
-    """
-    Fourier 基础原型库。
-    """
-
     def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
         super().__init__()
         self.num, self.ks = num_filters, kernel_size
@@ -124,15 +106,7 @@ class FourierFilterBank(nn.Module):
         return A * torch.cos(2 * torch.pi * f * t + phi)
 
 
-# ====================================================================
-# 2. 核心高级模块
-# ====================================================================
-
 class TCNBlock(nn.Module):
-    """
-    一个带残差连接的TCN基本块。
-    """
-
     def __init__(self, in_channels, out_channels, kernel_size=7, dilation=1, dropout=0.2):
         super(TCNBlock, self).__init__()
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=(kernel_size - 1) * dilation // 2,
@@ -153,10 +127,6 @@ class TCNBlock(nn.Module):
 
 
 class EnhancedTCN(nn.Module):
-    """
-    由多个TCNBlock堆叠而成的深度时序卷积网络。
-    """
-
     def __init__(self, input_dim, num_levels=4, kernel_size=7):
         super().__init__()
         layers = []
@@ -169,65 +139,106 @@ class EnhancedTCN(nn.Module):
         return self.network(x)
 
 
-class CrossAttentionSimilarity(nn.Module):
+# ====================================================================
+# 2. 核心高级模块 (已修改)
+# ====================================================================
+
+class MultiLatentSpaceSimilarity(nn.Module):
     """
-    【全新】基于交叉注意力的相似度计算模块。
-    它将原型作为Query，输入信号作为Key和Value，计算注意力距离。
+    【核心修改】多潜空间相似度模块。
+    为 Gabor, Fourier, Learnable 族群分别维护独立的 Query/Key/Value 投影，
+    强制它们在不同的潜在空间中进行匹配。
     """
 
-    def __init__(self, dim, heads=4, dim_head=32):
+    def __init__(self, dim, splits, heads=4, dim_head=32):
         super().__init__()
-        inner_dim = dim_head * heads
+        self.splits = splits  # [n_gabor, n_fourier, n_learnable]
         self.heads = heads
         self.scale = dim_head ** -0.5
+        inner_dim = dim_head * heads
 
-        self.to_q = nn.Linear(dim, inner_dim, bias=False)
-        self.to_k = nn.Linear(dim, inner_dim, bias=False)
-        self.to_v = nn.Linear(dim, inner_dim, bias=False)
+        # 为三个族群定义独立的三组投影矩阵
+        # 索引 0: Gabor, 1: Fourier, 2: Learnable
+        self.q_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
+        self.k_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
+        self.v_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
 
     def forward(self, x, prototypes):
+        # x: [B, C, L_seq]
+        # prototypes: [Total_Proto, C, L_proto]
         batch_size, C, seq_len = x.shape
-        num_prototypes, _, proto_len = prototypes.shape
+        _, _, proto_len = prototypes.shape
 
-        x = x.permute(0, 2, 1)
-        prototypes = prototypes.permute(0, 2, 1)
-        replicated_prototypes = prototypes.unsqueeze(0).repeat(batch_size, 1, 1, 1)
+        # 输入转置
+        x_perm = x.permute(0, 2, 1)
 
-        q = self.to_q(replicated_prototypes)
-        k = self.to_k(x)
-        v = self.to_v(x)
+        # 根据 splits 将所有原型切分为三组 (Gabor, Fourier, Learnable)
+        proto_groups = torch.split(prototypes, self.splits, dim=0)
 
-        q = q.view(batch_size, num_prototypes, proto_len, self.heads, -1).permute(0, 3, 1, 2, 4)
-        k = k.view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
-        v = v.view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
+        all_distances = []
+        all_indices = []
 
-        q = q.reshape(batch_size * self.heads * num_prototypes, proto_len, -1)
-        k = k.unsqueeze(2).repeat(1, 1, num_prototypes, 1, 1).reshape(batch_size * self.heads * num_prototypes, seq_len,
-                                                                      -1)
-        v = v.unsqueeze(2).repeat(1, 1, num_prototypes, 1, 1).reshape(batch_size * self.heads * num_prototypes, seq_len,
-                                                                      -1)
+        # 遍历三个族群，分别在各自的子空间计算 Attention
+        for i, p_group in enumerate(proto_groups):
+            num_p_group = p_group.shape[0]
+            if num_p_group == 0: continue
 
-        dots = torch.bmm(q, k.transpose(-1, -2)) * self.scale
-        attn = dots.softmax(dim=-1)
-        out = torch.bmm(attn, v)
+            # 1. 投影 Query (原型) -> 使用族群专有的 Q 投影
+            p_perm = p_group.permute(0, 2, 1)  # [Num_P, L_proto, C]
+            replicated_p = p_perm.unsqueeze(0).repeat(batch_size, 1, 1, 1)  # [B, Num_P, L_proto, C]
+            q = self.q_projs[i](replicated_p)
 
-        out = out.view(batch_size, self.heads, num_prototypes, proto_len, -1).permute(0, 2, 3, 1, 4).reshape(batch_size,
-                                                                                                             num_prototypes,
-                                                                                                             proto_len,
-                                                                                                             -1)
+            # 2. 投影 Key, Value (信号) -> 使用族群专有的 K, V 投影
+            # 这里的关键是：同一个信号 x 被映射到了三个不同的潜在空间
+            k = self.k_projs[i](x_perm)
+            v = self.v_projs[i](x_perm)
 
-        original_q_projected = self.to_q(replicated_prototypes)
-        distance = F.mse_loss(original_q_projected, out, reduction='none').mean(dim=[2, 3])
+            # Reshape Q: [B, Num_P, L_proto, Heads, D] -> [B*Heads*Num_P, L_proto, D]
+            q = q.view(batch_size, num_p_group, proto_len, self.heads, -1).permute(0, 3, 1, 2, 4)
+            q_reshaped = q.reshape(batch_size * self.heads * num_p_group, proto_len, -1)
 
-        attn_map = attn.view(batch_size, self.heads, num_prototypes, proto_len, seq_len)
-        heatmap = attn_map.mean(dim=[1, 3])
-        activation_indices = heatmap.argmax(dim=-1)
+            # Reshape K, V: [B, L_seq, Heads, D] -> [B, Heads, L_seq, D]
+            k = k.view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
+            v = v.view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
 
-        return distance, activation_indices
+            # Expand K, V to match Num_P dimension for batch matmul
+            k_reshaped = k.unsqueeze(2).repeat(1, 1, num_p_group, 1, 1).reshape(batch_size * self.heads * num_p_group,
+                                                                                seq_len, -1)
+            v_reshaped = v.unsqueeze(2).repeat(1, 1, num_p_group, 1, 1).reshape(batch_size * self.heads * num_p_group,
+                                                                                seq_len, -1)
+
+            # 3. Attention Calculation
+            dots = torch.bmm(q_reshaped, k_reshaped.transpose(-1, -2)) * self.scale
+            attn = dots.softmax(dim=-1)
+            out = torch.bmm(attn, v_reshaped)  # [..., L_proto, D]
+
+            # 4. Reconstruct shape and Calculate Distance
+            out = out.view(batch_size, self.heads, num_p_group, proto_len, -1).permute(0, 2, 3, 1, 4).reshape(
+                batch_size, num_p_group, proto_len, -1)
+
+            # Target: Original Query projected in latent space
+            original_q_projected = self.q_projs[i](replicated_p)
+
+            # Distance: MSE in latent space
+            dist = F.mse_loss(original_q_projected, out, reduction='none').mean(dim=[2, 3])  # [B, Num_P]
+
+            # Indices for visualization
+            attn_map = attn.view(batch_size, self.heads, num_p_group, proto_len, seq_len)
+            heatmap = attn_map.mean(dim=[1, 3])
+            indices = heatmap.argmax(dim=-1)
+
+            all_distances.append(dist)
+            all_indices.append(indices)
+
+        # 拼接回 [B, Total_Num_P]
+        final_distances = torch.cat(all_distances, dim=1)
+        final_indices = torch.cat(all_indices, dim=1)
+
+        return final_distances, final_indices
 
 
 # ====================================================================
-# 3. 最终的、完全优化的模型
+# 3. 最终模型 (已修改)
 # ====================================================================
 class ProtoPNet(nn.Module):
     def __init__(self, config):
@@ -235,10 +246,17 @@ class ProtoPNet(nn.Module):
         self.cfg = config
         afr_reduced_cnn_size = self.cfg['classifier']['afr_reduced_dim']
         self.prototype_kernel_size = self.cfg['classifier']['prototype_shape'][2]
-        self.num_composite_prototypes = self.cfg['classifier']['prototype_num']
+
+        # 计算每组原型数量
+        total_prototypes = self.cfg['classifier']['prototype_num']
+        n_g = total_prototypes // 3
+        n_f = total_prototypes // 3
+        n_l = total_prototypes - n_g - n_f
+        self.proto_splits = [n_g, n_f, n_l]  # 例如 [6, 6, 8]
+        self.num_composite_prototypes = total_prototypes
+
         num_classes = self.cfg['classifier']['num_classes']
 
-        # 速度优化核心: 高效的 Stem 模块
         self.stem = nn.Sequential(
             nn.Conv1d(1, 32, kernel_size=31, stride=4, padding=15, bias=False),
             nn.BatchNorm1d(32), nn.GELU(),
@@ -247,21 +265,22 @@ class ProtoPNet(nn.Module):
             nn.BatchNorm1d(64), nn.GELU()
         )
 
-        # 参数优化核心: Slim 主干网络
         self.feature_extractor = EEGNetProto_Slim(
             input_channels=64, afr_reduced_cnn_size=afr_reduced_cnn_size,
             block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
         )
 
-        # 深度时序建模模块
         self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
-        # 性能提升核心: 交叉注意力相似度模块
-        self.similarity_calculator = CrossAttentionSimilarity(
-            dim=afr_reduced_cnn_size, heads=4, dim_head=32
+        # --- 使用多潜空间模块 ---
+        self.similarity_calculator = MultiLatentSpaceSimilarity(
+            dim=afr_reduced_cnn_size,
+            splits=self.proto_splits,
+            heads=4,
+            dim_head=32
         )
 
-        # 原型库、混合权重、分类器的定义
+        # 原型库
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
         self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size, sample_rate=100.0)
         self.fourier_basis_bank = FourierFilterBank(self.num_fourier_basis, self.prototype_kernel_size,
@@ -269,39 +288,73 @@ class ProtoPNet(nn.Module):
         self.num_learnable_basis = 10
         self.learnable_basis_bank = nn.Parameter(torch.randn(self.num_learnable_basis, 1, self.prototype_kernel_size))
         nn.init.xavier_uniform_(self.learnable_basis_bank)
-        num_total_basis = self.num_gabor_basis + self.num_fourier_basis + self.num_learnable_basis
-        self.mixing_weights = nn.Parameter(torch.rand(self.num_composite_prototypes, num_total_basis))
-        nn.init.xavier_uniform_(self.mixing_weights)
+
+        # --- 核心修改: 独立的混合权重 (Block Diagonal) ---
+        # 以前是一个大矩阵，现在拆分，强制显式解耦
+        self.mix_gabor = nn.Parameter(torch.rand(n_g, self.num_gabor_basis))
+        self.mix_fourier = nn.Parameter(torch.rand(n_f, self.num_fourier_basis))
+        self.mix_learn = nn.Parameter(torch.rand(n_l, self.num_learnable_basis))
+
+        nn.init.xavier_uniform_(self.mix_gabor)
+        nn.init.xavier_uniform_(self.mix_fourier)
+        nn.init.xavier_uniform_(self.mix_learn)
+
         self.bn = nn.BatchNorm1d(self.num_composite_prototypes)
         self.fc = nn.Linear(self.num_composite_prototypes, num_classes)
         self.min_distance, self.min_indices = None, None
 
+    @property
+    def mixing_weights(self):
+        """
+        动态构建完整的混合权重矩阵 [Total_Composite, Total_Basis]。
+        非对角块填充为0，形成完美的阶梯状热力图。
+        """
+        device = self.mix_gabor.device
+
+        # 1. Gabor Block: [mix_gabor, 0, 0]
+        g_block = torch.cat([
+            self.mix_gabor,
+            torch.zeros(self.proto_splits[0], self.num_fourier_basis + self.num_learnable_basis, device=device)
+        ], dim=1)
+
+        # 2. Fourier Block: [0, mix_fourier, 0]
+        f_block = torch.cat([
+            torch.zeros(self.proto_splits[1], self.num_gabor_basis, device=device),
+            self.mix_fourier,
+            torch.zeros(self.proto_splits[1], self.num_learnable_basis, device=device)
+        ], dim=1)
+
+        # 3. Learnable Block: [0, 0, mix_learn]
+        l_block = torch.cat([
+            torch.zeros(self.proto_splits[2], self.num_gabor_basis + self.num_fourier_basis, device=device),
+            self.mix_learn
+        ], dim=1)
+
+        return torch.cat([g_block, f_block, l_block], dim=0)
+
     def forward(self, x, return_indices=False):
-        # 1. 通过 Stem 快速压缩序列
         stem_features = self.stem(x)
-
-        # 2. 在短序列上进行深度特征提取
         conv_features = self.feature_extractor(stem_features)
-
-        # 3. 进行时序建模
         temporal_features = self.tcn_layer(conv_features)
 
         C = temporal_features.shape[1]
 
-        # 4. 构建复合原型
-        gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)
-        fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)
-        learnable_kernels = self.learnable_basis_bank.repeat(1, C, 1)
-        base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learnable_kernels), dim=0)
-        # composite_prototypes = torch.matmul(F.relu(self.mixing_weights), base_prototypes.flatten(1))
-        composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
-        composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
+        # 分别获取并重复 Basis Kernels
+        gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)  # [20, C, K]
+        fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)  # [20, C, K]
+        learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)  # [10, C, K]
 
-        # 5. 使用交叉注意力计算距离和激活位置
-        min_distance, min_indices = self.similarity_calculator(temporal_features, composite_prototypes)
+        # 分组混合: 每个组只使用自己对应的 Basis
+        comp_g = torch.matmul(self.mix_gabor, gabor_kernels.flatten(1)).view(self.proto_splits[0], C, -1)
+        comp_f = torch.matmul(self.mix_fourier, fourier_kernels.flatten(1)).view(self.proto_splits[1], C, -1)
+        comp_l = torch.matmul(self.mix_learn, learn_kernels.flatten(1)).view(self.proto_splits[2], C, -1)
+
+        # 拼接用于计算 (Calculator 内部会再次切分并投影到不同空间)
+        all_prototypes = torch.cat([comp_g, comp_f, comp_l], dim=0)
+
+        min_distance, min_indices = self.similarity_calculator(temporal_features, all_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
 
-        # 6. 将距离转换为相似度并分类
         similarity = torch.log((self.min_distance + 1) / (self.min_distance + 1e-4))
         bn_similarity = self.bn(similarity)
         logits = self.fc(bn_similarity)

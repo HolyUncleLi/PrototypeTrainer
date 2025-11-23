@@ -1,4 +1,4 @@
-# --- train_mtcl.py (Bug Fixed & Logic Corrected) ---
+# --- train_mtcl.py ---
 
 import os, sys
 import json
@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 
 from utils import *
 from loader import EEGDataLoader
-from models.protop_cross import ProtoPNet  # 确保这里的导入路径和类名正确
+from models.protop_cross import ProtoPNet
 import torch.nn.functional as F
 
 CLASS_WEIGHT = [1, 1.5, 1, 1, 1]
@@ -42,17 +42,7 @@ class OneFoldTrainer:
         self.ckpt_name = 'ckpt_fold-{0:02d}.pth'.format(self.fold)
         self.early_stopping = EarlyStopping(patience=self.es_cfg['patience'], verbose=True, ckpt_path=self.ckpt_path,
                                             ckpt_name=self.ckpt_name, mode=self.es_cfg['mode'])
-        '''
-        self.lambdas = {
-            'cls': self.cfg['classifier']['class_lambda'],
-            'dist': 0.1,
-            'identity': 0.05,
-            'gabor_spec': 0.01,
-            'fourier_spec': 0.01,
-            'orth': 0.1,
-            'mix_l1': 1e-3
-        }
-        '''
+
         self.lambdas = {
             'cls': self.cfg['classifier'].get('class_lambda', 50),
             'dist': self.cfg['classifier'].get('dist_lambda', 17),
@@ -93,88 +83,84 @@ class OneFoldTrainer:
     def compute_comprehensive_loss(self, outputs, labels):
         self.loss_ensemble = {}
         model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+
+        # 1. 分类损失
         cross_entropy = self.criterion(outputs, labels)
         self.loss_ensemble['cross_entropy'] = self.lambdas['cls'] * cross_entropy
+
         min_dist = model_module.min_distance
-        num_prototypes_per_class = model_module.num_composite_prototypes // model_module.fc.out_features
-        prototype_class_identity = torch.zeros(model_module.num_composite_prototypes, model_module.fc.out_features,
-                                               device=self.device)
-        for j in range(model_module.fc.out_features):
+        num_prototypes = model_module.num_composite_prototypes
+        num_classes = model_module.fc.out_features
+        num_prototypes_per_class = num_prototypes // num_classes
+
+        # 2. 聚类与分离损失
+        prototype_class_identity = torch.zeros(num_prototypes, num_classes, device=self.device)
+        for j in range(num_classes):
             prototype_class_identity[j * num_prototypes_per_class: (j + 1) * num_prototypes_per_class, j] = 1
 
-        # ========== 【核心修正】 ==========
-        # 1. 使用 labels 为批次中的每个样本动态选择正确的类别掩码
-        # prototype_class_identity.T 的形状是 [5, 20]
-        # labels 的形状是 [64]
-        # class_mask 的形状将是 [64, 20]，这正是我们需要的 per-sample mask
-        class_mask = prototype_class_identity.T[labels].to(self.device)
-
-        # 2. 使用新的掩码计算同类和异类距离
+        class_mask = prototype_class_identity.T[labels].to(self.device)  # [Batch, Num_Proto]
         inverted_distances = -min_dist
 
-        # 计算同类距离
-        same_class_log_mask = torch.log(class_mask)  # 正确的为0, 错误为-inf
+        # 同类距离 (Clustering)
+        same_class_log_mask = torch.log(class_mask + 1e-9)
         same_class_distances = inverted_distances + same_class_log_mask
         max_same_class_dist = torch.max(same_class_distances, dim=1).values
         clst_loss = torch.mean(-max_same_class_dist)
         self.loss_ensemble['clst_loss'] = self.lambdas['dist'] * clst_loss
 
-        # 计算异类距离
-        diff_class_log_mask = torch.log(1 - class_mask)  # 错误为0, 正确为-inf
+        # 异类距离 (Separation)
+        diff_class_log_mask = torch.log(1 - class_mask + 1e-9)
         diff_class_distances = inverted_distances + diff_class_log_mask
         max_diff_class_dist = torch.max(diff_class_distances, dim=1).values
         sep_loss = torch.mean(max_diff_class_dist)
         self.loss_ensemble['sep_loss'] = self.lambdas['identity'] * sep_loss
 
-        # 【新增代码段开始】
-        # --- 计算原型多样性损失 ---
-        model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
-
-        # 1. 获取最终的组合原型 (形状: [num_prototypes, feature_dim])
-        # 注意: 这里需要获取原型本身，而不是通过混合权重重新计算。
-        # 幸运的是，您的模型结构中，组合原型是动态计算的，所以我们需要拿到它们
+        # 3. 原型多样性损失
+        # 获取所有基础 Basis
         gabor_kernels = model_module.gabor_basis_bank.get_kernels()
         fourier_kernels = model_module.fourier_basis_bank.get_kernels()
         learnable_kernels = model_module.learnable_basis_bank
         base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learnable_kernels), dim=0).squeeze(1)
 
-        # 如果您去掉了relu，就直接用mixing_weights
-        # weights = F.relu(model_module.mixing_weights)
-        weights = model_module.mixing_weights
+        # 通过 Property 获取完整的 Block-Diagonal Mixing Weights
+        full_weights = model_module.mixing_weights
 
-        composite_prototypes = torch.matmul(weights, base_prototypes)  # 形状: [20, 15] 假设原型长度为15
+        # 计算复合原型
+        composite_prototypes = torch.matmul(full_weights, base_prototypes)
 
-        # 2. 归一化原型，计算余弦相似度矩阵
+        # 计算余弦相似度并惩罚非对角元素
         prototypes_normalized = F.normalize(composite_prototypes, p=2, dim=1)
         similarity_matrix = torch.matmul(prototypes_normalized, prototypes_normalized.t())
-
-        # 3. 我们只惩罚非对角线上的相似度（即不同原型间的相似度）
-        # 创建一个对角线为0，其余为1的掩码
-        mask = 1 - torch.eye(model_module.num_composite_prototypes, device=self.device)
-
-        # 使用掩码去除对角线元素，并取平均值作为损失
-        # 我们希望相似度接近0，所以直接将相似度的平方作为损失
+        mask = 1 - torch.eye(num_prototypes, device=self.device)
         diversity_loss = torch.mean((similarity_matrix * mask) ** 2)
         self.loss_ensemble['diversity_loss'] = self.lambdas.get('diversity', 1.0) * diversity_loss
 
+        # 4. Gabor & Fourier 约束
         gabor_bank = model_module.gabor_basis_bank
-        fourier_bank = model_module.fourier_basis_bank
-        learnable_kernels = model_module.learnable_basis_bank
         gabor_mu_loss = torch.mean(gabor_bank.mu ** 2)
         gabor_sigma_loss = torch.mean(F.relu(gabor_bank.sigma - 0.5))
         self.loss_ensemble['gabor_spec_loss'] = self.lambdas.get('gabor_spec', 0.01) * (
-                    gabor_mu_loss + gabor_sigma_loss)
+                gabor_mu_loss + gabor_sigma_loss)
+
+        fourier_bank = model_module.fourier_basis_bank
         fourier_amp_variance_loss = torch.var(fourier_bank.A)
         self.loss_ensemble['fourier_spec_loss'] = self.lambdas.get('fourier_spec', 0.01) * fourier_amp_variance_loss
-        gabor_kernels = gabor_bank.get_kernels().detach().flatten(1)  # detach to be safe
-        fourier_kernels = fourier_bank.get_kernels().detach().flatten(1)
+
+        # 5. 正交性与 L1 约束
+        gabor_kernels_flat = gabor_bank.get_kernels().detach().flatten(1)
+        fourier_kernels_flat = fourier_bank.get_kernels().detach().flatten(1)
         learnable_flat = learnable_kernels.flatten(1)
-        all_fixed_kernels = torch.cat([gabor_kernels, fourier_kernels], dim=0)
+        all_fixed_kernels = torch.cat([gabor_kernels_flat, fourier_kernels_flat], dim=0)
         cos_sim = F.cosine_similarity(learnable_flat.unsqueeze(1), all_fixed_kernels.unsqueeze(0), dim=2)
         orthogonality_loss = torch.mean(cos_sim ** 2)
         self.loss_ensemble['orth_loss'] = self.lambdas.get('orth', 0.1) * orthogonality_loss
-        mix_l1_loss = torch.norm(model_module.mixing_weights, p=1)
+
+        # L1 Loss: 直接对三个权重矩阵求 Norm 和
+        mix_l1_loss = (torch.norm(model_module.mix_gabor, p=1) +
+                       torch.norm(model_module.mix_fourier, p=1) +
+                       torch.norm(model_module.mix_learn, p=1))
         self.loss_ensemble['weight_loss'] = self.lambdas.get('mix_l1', 1e-4) * mix_l1_loss
+
         total_loss = sum(self.loss_ensemble.values())
         return total_loss
 
@@ -194,18 +180,17 @@ class OneFoldTrainer:
             predicted = torch.argmax(outputs, 1)
             correct += predicted.eq(labels).sum().item()
             self.train_iter += 1
+
+            # Logging
             cls_val = self.loss_ensemble.get('cross_entropy', torch.tensor(0.0)).item()
             clst_val = self.loss_ensemble.get('clst_loss', torch.tensor(0.0)).item()
             diversity_val = self.loss_ensemble.get('diversity_loss', torch.tensor(0.0)).item()
             sep_val = self.loss_ensemble.get('sep_loss', torch.tensor(0.0)).item()
-            g_spec_val = self.loss_ensemble.get('gabor_spec_loss', torch.tensor(0.0)).item()
-            f_spec_val = self.loss_ensemble.get('fourier_spec_loss', torch.tensor(0.0)).item()
-            orth_val = self.loss_ensemble.get('orth_loss', torch.tensor(0.0)).item()
-            l1_val = self.loss_ensemble.get('weight_loss', torch.tensor(0.0)).item()
             progress_bar(i, len(self.loader_dict['train']),
-                         'Loss: %.3f | Acc: %.3f%% (%d/%d) | cls: %.3f | clst: %.3f | div: %.3f | sep: %.3f | g_spec: %.3f | f_spec: %.3f | orth: %.3f | L1: %.4f'
-                         % (train_loss / (i + 1), 100. * correct / total, correct, total,
-                            cls_val, clst_val, diversity_val, sep_val, g_spec_val, f_spec_val, orth_val, l1_val))
+                         'Loss: %.3f | Acc: %.3f%% | cls: %.3f | clst: %.3f | div: %.3f | sep: %.3f'
+                         % (train_loss / (i + 1), 100. * correct / total,
+                            cls_val, clst_val, diversity_val, sep_val))
+
             if self.train_iter % self.tp_cfg['val_period'] == 0:
                 print('')
                 val_acc, val_loss, val_mf1 = self.evaluate(mode='val')
@@ -273,7 +258,8 @@ def main():
     config['mode'] = 'normal'
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
-    for fold in range(1, config['dataset']['num_splits'] + 1):
+    # for fold in range(1, config['dataset']['num_splits'] + 1):
+    for fold in range(1, 2):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])
