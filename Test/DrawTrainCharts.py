@@ -3,17 +3,14 @@
 import matplotlib.pyplot as plt
 import os
 import argparse
+import glob
 
 
 def parse_txt_log(filepath):
-    """
-    解析格式为: Epoch:1 | train_loss:0.5 | val_acc:80.2 ... 的文本文件
-    """
     data = {
         'epoch': [],
-        'train_acc': [], 'val_acc': [], 'test_acc': [],
         'train_loss': [],
-        'sub_losses': {}  # 存放 loss_cls, loss_clst 等
+        'sub_losses': {}
     }
 
     with open(filepath, 'r') as f:
@@ -29,16 +26,11 @@ def parse_txt_log(filepath):
                 key, val = part.split(':')
                 metrics[key.strip()] = float(val)
 
-        # 填充数据
         data['epoch'].append(metrics['Epoch'])
-        data['train_acc'].append(metrics.get('train_acc', 0))
-        data['val_acc'].append(metrics.get('val_acc', 0))
-        data['test_acc'].append(metrics.get('test_acc', 0))
         data['train_loss'].append(metrics.get('train_loss', 0))
 
-        # 自动发现子损失项
         for k, v in metrics.items():
-            if k.startswith('loss_') and k != 'train_loss':  # 子 loss
+            if k.startswith('loss_') and k != 'train_loss':
                 if k not in data['sub_losses']:
                     data['sub_losses'][k] = []
                 data['sub_losses'][k].append(v)
@@ -53,50 +45,51 @@ def plot_curves(log_path, output_dir='./results'):
     data = parse_txt_log(log_path)
     epochs = data['epoch']
 
-    # 1. 精度曲线 (Acc)
+    # ------------------------------------------------
+    # Plot 1: Total Loss Only
+    # ------------------------------------------------
     plt.figure(figsize=(10, 6))
-    plt.plot(epochs, data['train_acc'], label='Train Acc', marker='.')
-    plt.plot(epochs, data['val_acc'], label='Val Acc', marker='.')
-    plt.plot(epochs, data['test_acc'], label='Test Acc', marker='.')
-    plt.title('Accuracy Evolution')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy (%)')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, 'accuracy_curve.png'))
-    plt.show()
-
-    # 2. 总 Loss 曲线
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs, data['train_loss'], label='Total Train Loss', color='red')
-    plt.title('Total Training Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, 'total_loss_curve.png'))
-    plt.show()
-
-    # 3. 子 Loss 变化 (放在一张图里，可能需要双y轴或log scale)
-    plt.figure(figsize=(12, 8))
-    for loss_name, loss_values in data['sub_losses'].items():
-        plt.plot(epochs, loss_values, label=loss_name)
-
-    plt.title('Detailed Loss Components')
+    plt.plot(epochs, data['train_loss'], label='Total Train Loss', color='black', linewidth=2)
+    plt.title('Total Training Loss over Epochs')
     plt.xlabel('Epoch')
     plt.ylabel('Loss Value')
-    plt.yscale('log')  # 使用对数坐标，因为 loss 大小差异可能很大
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    save_path1 = os.path.join(output_dir, 'total_loss_curve.png')
+    plt.savefig(save_path1)
+    print(f"Saved Total Loss plot to {save_path1}")
+    plt.close()
+
+    # ------------------------------------------------
+    # Plot 2: All Individual Loss Components
+    # ------------------------------------------------
+    plt.figure(figsize=(12, 8))
+
+    # 定义不同 loss 的样式，方便区分
+    styles = ['-', '--', '-.', ':']
+
+    for i, (loss_name, loss_values) in enumerate(data['sub_losses'].items()):
+        if len(loss_values) == len(epochs):
+            plt.plot(epochs, loss_values, label=loss_name, linestyle=styles[i % len(styles)], linewidth=2)
+
+    plt.title('Detailed Loss Components (Log Scale)')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss Value (Log Scale)')
+    plt.yscale('log')  # 使用对数坐标，因为不同 Loss 量级差异很大
     plt.grid(True, alpha=0.3, which='both')
     plt.legend()
-    plt.savefig(os.path.join(output_dir, 'detailed_losses.png'))
-    plt.show()
+    save_path2 = os.path.join(output_dir, 'detailed_loss_components.png')
+    plt.savefig(save_path2)
+    print(f"Saved Components plot to {save_path2}")
+    plt.close()
 
 
 if __name__ == "__main__":
-    # 使用示例
-    # 请将 log_file 替换为你实际生成的 txt 路径
-    log_file = './logs/train_log_SleePyCo-Transformer_fold1.txt'
-    if os.path.exists(log_file):
-        plot_curves(log_file)
+    # 自动寻找最新的 log 文件
+    log_files = glob.glob('./logs/*.txt')
+    if log_files:
+        latest_log = max(log_files, key=os.path.getmtime)
+        print(f"Found latest log: {latest_log}")
+        plot_curves(latest_log)
     else:
-        print(f"File not found: {log_file}")
+        print("No log files found in ./logs/")
