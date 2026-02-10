@@ -382,7 +382,7 @@ def main():
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
     # for fold in range(1, config['dataset']['num_splits'] + 1):
-    for fold in range(1, 5):
+    for fold in range(1, 2):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])

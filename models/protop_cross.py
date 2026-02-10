@@ -337,7 +337,7 @@ class ProtoPNet(nn.Module):
         return (logits, self.min_indices) if return_indices else logits
 
 
-'''
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -364,4 +364,3 @@ print(f"模型总参数量 (Total Trainable Params): {total_params} M")
 x = torch.rand([64, 1, 30000]).cuda()
 out = model(x)
 print(out, out.shape)
-'''
