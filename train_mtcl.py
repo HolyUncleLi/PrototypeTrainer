@@ -20,7 +20,7 @@ from utils import *
 from loader import EEGDataLoader
 
 # [IMPORTANT] 导入 V4 模型
-from models.protop_cross_v4 import ProtoPNet
+from models.protop_gabor import ProtoPNet
 
 warnings.filterwarnings("ignore")
 CLASS_WEIGHT = [1, 1.5, 1, 1, 1]
