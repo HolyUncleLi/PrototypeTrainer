@@ -70,7 +70,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
     learnable_kernels = model_to_access.learnable_basis_bank.data.squeeze(1)
     all_basis_kernels = torch.cat([gabor_kernels, fourier_kernels, learnable_kernels], dim=0)
 
-    # 恢复：直接获取学习到的 weights
+    # 【注意】通过 .mixing_weights 属性获取完整矩阵，并 .detach()
     full_weights = model_to_access.mixing_weights.detach()
 
     reconstructed_prototypes = torch.matmul(full_weights, all_basis_kernels).cpu().detach().numpy()
@@ -155,9 +155,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
 
 def plot_mixing_weights_heatmap(model, device):
     """
-    【FIGURE 2】生成 Learned Mixing Matrix。
-    这里不再手动填0，而是真实展示模型学习到的权重分布。
-    如果 Structure Loss 生效，我们应该能看到明显的对角块高亮，而非对角区域颜色较暗（但不一定是纯黑）。
+    【FIGURE 2】Generates the heatmap of the mixing_weights matrix with Block Diagonal structure.
     """
     print("\n--- Generating Figure 2: Basis Prototype Mixing Matrix ---")
     is_parallel = isinstance(model, nn.DataParallel)
@@ -165,7 +163,7 @@ def plot_mixing_weights_heatmap(model, device):
     model.eval()
     model.to(device)
 
-    # 直接取原始权重
+    # 【关键】这里会调用 Property，自动生成带0填充的阶梯状矩阵
     weights = model_to_access.mixing_weights.detach().cpu().numpy()
 
     num_composite, num_basis = weights.shape
@@ -175,7 +173,6 @@ def plot_mixing_weights_heatmap(model, device):
     num_l = model_to_access.num_learnable_basis
 
     fig, ax = plt.subplots(figsize=(18, 10))
-    # 使用 viridis 或其他 perceptually uniform colormap
     im = ax.imshow(weights, cmap='viridis', aspect='auto', interpolation='nearest')
 
     ax.set_yticks(np.arange(num_composite))
@@ -190,15 +187,17 @@ def plot_mixing_weights_heatmap(model, device):
     ax.set_xlabel("Basis Prototypes (G: Gabor, F: Fourier, L: Learnable)", fontsize=12)
     ax.set_ylabel("Composite Prototypes", fontsize=12)
 
-    # 保留辅助线，这有助于观察结构化是否成功，但不会改变数据本身
-    ax.axvline(x=num_g - 0.5, color='white', linestyle='--', linewidth=1, alpha=0.7)
-    ax.axvline(x=num_g + num_f - 0.5, color='white', linestyle='--', linewidth=1, alpha=0.7)
+    # 绘制分隔线
+    ax.axvline(x=num_g - 0.5, color='white', linestyle='--', linewidth=2)
+    ax.axvline(x=num_g + num_f - 0.5, color='white', linestyle='--', linewidth=2)
 
+    '''
+    # 绘制水平分隔线 (根据 splits)
     splits = model_to_access.proto_splits
-    ax.axhline(y=splits[0] - 0.5, color='white', linestyle='--', linewidth=1, alpha=0.7)
-    ax.axhline(y=splits[0] + splits[1] - 0.5, color='white', linestyle='--', linewidth=1, alpha=0.7)
-
-    ax.set_title("Learned Mixing Weights: Emergent Structure via Soft Regularization", fontsize=16, pad=20)
+    ax.axhline(y=splits[0] - 0.5, color='white', linestyle='--', linewidth=2)
+    ax.axhline(y=splits[0] + splits[1] - 0.5, color='white', linestyle='--', linewidth=2)
+    '''
+    ax.set_title("Mixing Weights: Distinct Prototype Families (Block Diagonal)", fontsize=16, pad=20)
     cbar = fig.colorbar(im, ax=ax, orientation='vertical')
     cbar.set_label('Mixing Weight Value', fontsize=12)
 
