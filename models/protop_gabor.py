@@ -1,4 +1,4 @@
-# --- models/protop_cross_v4.py ---
+# --- models/protop_cross_v5.py ---
 
 import torch
 import torch.nn as nn
@@ -7,13 +7,13 @@ import math
 
 
 # ====================================================================
-# 1. 基础组件: 物理 Gabor 层 & 无损折叠
+# 1. 物理层 (保留创新点)
 # ====================================================================
 
 class LearnableGaborConv1d(nn.Module):
     """
-    物理层: 加入 stride 参数。
-    对于睡眠脑电，100Hz 采样率下，使用 stride=2 或 4 仍然能完美保留 Delta/Theta/Alpha/Beta/Spindle 特征。
+    第一层保持 Gabor 卷积，赋予模型物理可解释的初始化。
+    使用 stride=2 进行初步降采样。
     """
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, sample_rate=100.0):
@@ -42,158 +42,95 @@ class LearnableGaborConv1d(nn.Module):
         w_real, w_imag = self.get_filter()
         out_real = F.conv1d(x, w_real, padding=self.padding, stride=self.stride)
         out_imag = F.conv1d(x, w_imag, padding=self.padding, stride=self.stride)
-        magnitude = torch.sqrt(out_real ** 2 + out_imag ** 2 + 1e-8)
-        return magnitude, out_real
+        # 输出模值，保留能量特征
+        return torch.sqrt(out_real ** 2 + out_imag ** 2 + 1e-8)
 
 
-class TemporalFolder(nn.Module):
+# ====================================================================
+# 2. 核心骨干: 多级残差金字塔 (Pyramidal ResNet)
+# ====================================================================
+
+class ResBlock(nn.Module):
     """
-    无损时间折叠 (类似 PixelUnshuffle)。
-    将 [B, C, L] -> [B, C*r, L/r]
-    既减小了显存压力 (L变小)，又增加了特征维度 (C变大)，为增加参数量提供了空间。
+    标准的残差块，用于提取深层特征。
     """
 
-    def __init__(self, downscale_factor):
-        super().__init__()
-        self.r = downscale_factor
+    def __init__(self, in_channels, out_channels, stride=1, dilation=1):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=7, stride=stride,
+                               padding=3 + (dilation - 1) * 3, dilation=dilation, bias=False)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=7, stride=1,
+                               padding=3, bias=False)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.gelu = nn.GELU()
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(out_channels)
+            )
 
     def forward(self, x):
-        b, c, l = x.size()
-        # 补齐长度以防无法整除
-        if l % self.r != 0:
-            pad = self.r - (l % self.r)
-            x = F.pad(x, (0, pad))
-            l = x.size(2)
+        out = self.gelu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.gelu(out)
+        return out
 
-        # [B, C, L/r, r] -> [B, C, r, L/r] -> [B, C*r, L/r]
-        x = x.view(b, c, l // self.r, self.r)
-        x = x.permute(0, 1, 3, 2).contiguous()
-        x = x.view(b, c * self.r, l // self.r)
+
+class HierarchicalFeatureExtractor(nn.Module):
+    """
+    层级特征提取器：替代之前的折叠流。
+    结构类似 ResNet，逐层下采样，逐层增加通道。
+    """
+
+    def __init__(self, input_dim=64, out_dim=128):
+        super().__init__()
+
+        # Stage 1: 保持 64 通道，降采样 4倍 (30000/2 -> 3750)
+        self.layer1 = nn.Sequential(
+            ResBlock(input_dim, 64, stride=2),
+            ResBlock(64, 64, stride=2)
+        )
+
+        # Stage 2: 升维到 128，降采样 4倍 (3750 -> 937)
+        self.layer2 = nn.Sequential(
+            ResBlock(64, 128, stride=2),
+            ResBlock(128, 128, stride=2)
+        )
+
+        # Stage 3: 升维到 256，降采样 2倍 (937 -> 468)
+        self.layer3 = nn.Sequential(
+            ResBlock(128, 256, stride=2),
+            ResBlock(256, 256, stride=1, dilation=2)  # 使用空洞卷积增加感受野
+        )
+
+        # TCN Context Layer: 最后的时序整合
+        self.tcn = nn.Sequential(
+            nn.Conv1d(256, 256, kernel_size=3, padding=2, dilation=2),
+            nn.BatchNorm1d(256),
+            nn.GELU(),
+            nn.Dropout(0.2)
+        )
+
+        # 最终映射到原型维度
+        self.final_proj = nn.Conv1d(256, out_dim, kernel_size=1)
+
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.tcn(x)
+        x = self.final_proj(x)
         return x
 
 
 # ====================================================================
-# 2. 高级特征流 (High-Capacity Streams)
+# 3. 辅助模块 (Memory Efficient Attention - 保持 V4 的修复版)
 # ====================================================================
 
-class HighCapSemanticStream(nn.Module):
-    """
-    高容量语义流。
-    由于输入长度被折叠变短了，我们可以大幅增加通道数 (channels)，
-    从而显著增加模型的参数量 (Params)，提高拟合能力，同时显存占用可控。
-    """
-
-    def __init__(self, in_channels, hidden_dim=256):
-        super().__init__()
-        self.net = nn.Sequential(
-            # Layer 1: Expand
-            nn.Conv1d(in_channels, hidden_dim, kernel_size=5, padding=2),
-            nn.BatchNorm1d(hidden_dim),
-            nn.GELU(),
-            nn.MaxPool1d(2),
-
-            # Layer 2: Deep Processing (High Parameters here!)
-            # 256 input * 512 output * 5 kernel = ~650k Params (这里参数量就上来了)
-            nn.Conv1d(hidden_dim, hidden_dim * 2, kernel_size=5, padding=2),
-            nn.BatchNorm1d(hidden_dim * 2),
-            nn.GELU(),
-
-            # Layer 3: Bottleneck
-            nn.Conv1d(hidden_dim * 2, hidden_dim, kernel_size=1),
-            nn.BatchNorm1d(hidden_dim),
-            nn.GELU(),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class FoldedMorphologicalStream(nn.Module):
-    """
-    折叠形态流。
-    在折叠后的特征空间上操作，保留细节但计算高效。
-    """
-
-    def __init__(self, in_channels, hidden_dim=128):
-        super().__init__()
-        # in_channels 已经是折叠后的 (e.g., 64*4 = 256)
-        self.net = nn.Sequential(
-            # Dilated Conv 1
-            nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding=2, dilation=2),
-            nn.BatchNorm1d(hidden_dim),
-            nn.GELU(),
-            # Dilated Conv 2
-            nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=4, dilation=4),
-            nn.BatchNorm1d(hidden_dim),
-            nn.GELU(),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
-# ====================================================================
-# 3. 骨干网络 V4
-# ====================================================================
-
-class LGWDS_Net_V4(nn.Module):
-    def __init__(self, out_dim=128):
-        super().__init__()
-
-        # 1. 物理层: 增加 Stride=2，直接减少 50% 显存
-        self.gabor_layer = LearnableGaborConv1d(1, 64, kernel_size=63, stride=2)
-        # Output: [B, 64, 15000]
-
-        # 2. 折叠层: Factor=4
-        # 将 15000 长度折叠为 3750。通道数变为 64*4 = 256
-        self.folder = TemporalFolder(downscale_factor=4)
-
-        # 3. 双流 (输入通道均为 256)
-        # 语义流: 增加大量参数
-        self.semantic_stream = HighCapSemanticStream(in_channels=256, hidden_dim=256)
-        # 形态流: 轻量级保真
-        self.morph_stream = FoldedMorphologicalStream(in_channels=256, hidden_dim=128)
-
-        # 4. 融合与输出
-        # 语义流输出: [B, 256, 1875] (经过了一次 pool2)
-        # 形态流输出: [B, 128, 3750]
-        # 我们将语义流上采样对齐
-        self.final_fusion = nn.Conv1d(128 + 256, out_dim, kernel_size=1)
-
-        # 激进的池化: 3750 -> ~200
-        # 这一步非常重要，它确保进入 Attention 的序列长度 L 很小
-        # 从而避免 Attention 计算时的显存爆炸
-        self.final_pool = nn.AdaptiveAvgPool1d(256)
-
-    def forward(self, x):
-        # x: [B, 1, 30000]
-
-        # 1. Gabor [B, 64, 15000]
-        mag, raw_real = self.gabor_layer(x)
-
-        # 2. Folding [B, 256, 3750]
-        mag_fold = self.folder(mag)
-        raw_fold = self.folder(raw_real)
-
-        # 3. Streams
-        sem = self.semantic_stream(mag_fold)  # [B, 256, 1875]
-        morph = self.morph_stream(raw_fold)  # [B, 128, 3750]
-
-        # 4. Align & Fuse
-        sem_up = F.interpolate(sem, size=morph.shape[-1], mode='nearest')
-        cat = torch.cat([morph, sem_up], dim=1)  # [B, 384, 3750]
-
-        out = self.final_fusion(cat)  # [B, out_dim, 3750]
-        out = self.final_pool(out)  # [B, out_dim, 256] -> 显存安全区
-
-        return out
-
-
-# ====================================================================
-# 4. 辅助模块 (包含内存优化的 Attention)
-# ====================================================================
-
-# GaborFilterBank, FourierFilterBank 保持不变 (请复制之前的代码)
 class GaborFilterBank(nn.Module):
     def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
         super().__init__()
@@ -231,7 +168,10 @@ class FourierFilterBank(nn.Module):
 
 
 class MultiLatentSpaceSimilarity(nn.Module):
-    """ 内存优化版 + 维度修复版 """
+    """
+    [最终稳定版]
+    使用 Broadcasting + Mean Reduction，显存友好且支持任意 kernel size
+    """
 
     def __init__(self, dim, splits, heads=4, dim_head=32):
         super().__init__()
@@ -257,31 +197,29 @@ class MultiLatentSpaceSimilarity(nn.Module):
             if num_p_group == 0: continue
 
             p_perm = p_group.permute(0, 2, 1)
+            # Query: [B, P, K, C]
             replicated_p = p_perm.unsqueeze(0).expand(batch_size, -1, -1, -1)
-
-            # Query Projection & Reduction
             q = self.q_projs[i](replicated_p)
             q = q.view(batch_size, num_p_group, proto_len, self.heads, self.dim_head)
-            q = q.mean(dim=2)  # Aggregate kernel time dim
+            q = q.mean(dim=2)  # 聚合 kernel 时间维 [B, P, H, D]
             q = q.permute(0, 2, 1, 3)  # [B, H, P, D]
 
-            # Key/Value Projection
+            # Key, Value: [B, L, C]
             k = self.k_projs[i](x_perm)
             v = self.v_projs[i](x_perm)
             k = k.view(batch_size, seq_len, self.heads, self.dim_head).permute(0, 2, 1, 3)
             v = v.view(batch_size, seq_len, self.heads, self.dim_head).permute(0, 2, 1, 3)
 
-            # Attention (Matrix Mul - Low Memory)
+            # Attention
             dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
             attn = dots.softmax(dim=-1)
             out = torch.matmul(attn, v)
 
-            # Distance
+            # Recon & Distance
             out = out.permute(0, 2, 1, 3).reshape(batch_size, num_p_group, -1)
             original_q_projected = self.q_projs[i](replicated_p).mean(dim=2)
             dist = F.mse_loss(original_q_projected, out, reduction='none').mean(dim=-1)
 
-            # Indices
             heatmap = attn.mean(dim=1)
             indices = heatmap.argmax(dim=-1)
             all_distances.append(dist)
@@ -293,7 +231,7 @@ class MultiLatentSpaceSimilarity(nn.Module):
 
 
 # ====================================================================
-# 5. ProtoPNet V4 (Main Model)
+# 4. ProtoPNet V5 (主模型)
 # ====================================================================
 
 class ProtoPNet(nn.Module):
@@ -311,9 +249,13 @@ class ProtoPNet(nn.Module):
         self.num_composite_prototypes = total_prototypes
         num_classes = self.cfg['classifier']['num_classes']
 
-        # [NEW] V4 Feature Extractor
-        self.feature_extractor = LGWDS_Net_V4(out_dim=afr_reduced_cnn_size)
+        # 1. 物理层 Gabor Stem (Stride=2)
+        self.gabor_stem = LearnableGaborConv1d(1, 64, kernel_size=63, stride=2)
 
+        # 2. 层级特征提取 (Pyramidal)
+        self.feature_extractor = HierarchicalFeatureExtractor(input_dim=64, out_dim=afr_reduced_cnn_size)
+
+        # 3. 相似度模块
         self.similarity_calculator = MultiLatentSpaceSimilarity(
             dim=afr_reduced_cnn_size,
             splits=self.proto_splits,
@@ -321,7 +263,7 @@ class ProtoPNet(nn.Module):
             dim_head=32
         )
 
-        # Basis Banks
+        # 4. 原型库
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
         self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size, sample_rate=100.0)
         self.fourier_basis_bank = FourierFilterBank(self.num_fourier_basis, self.prototype_kernel_size,
@@ -333,7 +275,6 @@ class ProtoPNet(nn.Module):
         num_total_basis = self.num_gabor_basis + self.num_fourier_basis + self.num_learnable_basis
         self.mixing_weights = nn.Parameter(torch.randn(self.num_composite_prototypes, num_total_basis) * 0.01)
 
-        # Init weights
         with torch.no_grad():
             self.mixing_weights[0:n_g, 0:self.num_gabor_basis].add_(0.1)
             self.mixing_weights[n_g:n_g + n_f, self.num_gabor_basis:self.num_gabor_basis + self.num_fourier_basis].add_(
@@ -347,11 +288,14 @@ class ProtoPNet(nn.Module):
     def forward(self, x, return_indices=False):
         # x: [B, 1, 30000]
 
-        # 1. Extract Features (Low Memory, High Param)
-        features = self.feature_extractor(x)  # [B, C, 256]
+        # 1. Gabor Stem -> [B, 64, 15000]
+        x_gabor = self.gabor_stem(x)
+
+        # 2. Hierarchical Extraction -> [B, 128, 468]
+        features = self.feature_extractor(x_gabor)
         C = features.shape[1]
 
-        # 2. Generate Prototypes
+        # 3. Generate Prototypes
         gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)
         fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)
         learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)
@@ -360,7 +304,7 @@ class ProtoPNet(nn.Module):
         composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
         composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
 
-        # 3. Calculate Similarity (Optimized Attention)
+        # 4. Similarity
         min_distance, min_indices = self.similarity_calculator(features, composite_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
 

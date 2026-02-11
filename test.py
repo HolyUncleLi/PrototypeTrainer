@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
-from models.protop_cross import ProtoPNet
+from models.protop_gabor import ProtoPNet
 
 warnings.filterwarnings("ignore")
 
@@ -160,13 +160,15 @@ def main():
         summarize_result(config, fold, Y_true, Y_pred)
 
         '''绘制混淆矩阵'''
-        cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
+        # cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
         '''绘制原型模板图像 & 混合矩阵热力图'''
+        '''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         # generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
         plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
+        '''
 
 
         '''

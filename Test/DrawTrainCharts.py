@@ -86,10 +86,10 @@ def plot_curves(log_path, output_dir='./results'):
 
 if __name__ == "__main__":
     # 自动寻找最新的 log 文件
-    log_files = glob.glob('./logs/*.txt')
+    log_files = glob.glob('../logs/*.txt')
     if log_files:
         latest_log = max(log_files, key=os.path.getmtime)
         print(f"Found latest log: {latest_log}")
         plot_curves(latest_log)
     else:
-        print("No log files found in ./logs/")
+        print("No log files found in '../Test/logs/*.txt'")
