@@ -2,13 +2,13 @@
 
 import matplotlib.pyplot as plt
 import os
-import argparse
 import glob
 
 
 def parse_txt_log(filepath):
     data = {
         'epoch': [],
+        'train_acc': [], 'val_acc': [], 'test_acc': [],
         'train_loss': [],
         'sub_losses': {}
     }
@@ -27,6 +27,9 @@ def parse_txt_log(filepath):
                 metrics[key.strip()] = float(val)
 
         data['epoch'].append(metrics['Epoch'])
+        data['train_acc'].append(metrics.get('train_acc', 0))
+        data['val_acc'].append(metrics.get('val_acc', 0))
+        data['test_acc'].append(metrics.get('test_acc', 0))
         data['train_loss'].append(metrics.get('train_loss', 0))
 
         for k, v in metrics.items():
@@ -45,51 +48,50 @@ def plot_curves(log_path, output_dir='./results'):
     data = parse_txt_log(log_path)
     epochs = data['epoch']
 
-    # ------------------------------------------------
-    # Plot 1: Total Loss Only
-    # ------------------------------------------------
+    # --- Plot 1: Accuracy (Train vs Val vs Test) ---
     plt.figure(figsize=(10, 6))
-    plt.plot(epochs, data['train_loss'], label='Total Train Loss', color='black', linewidth=2)
-    plt.title('Total Training Loss over Epochs')
+    plt.plot(epochs, data['train_acc'], label='Train Acc', linestyle='-', marker='.')
+    plt.plot(epochs, data['val_acc'], label='Val Acc', linestyle='-', marker='.')
+    # plt.plot(epochs, data['test_acc'], label='Test Acc', linestyle='--', alpha=0.5)
+    plt.title('Accuracy Evolution')
     plt.xlabel('Epoch')
-    plt.ylabel('Loss Value')
+    plt.ylabel('Accuracy (%)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(output_dir, 'accuracy_curve.png'))
+    plt.close()
+
+    # --- Plot 2: Total Loss ---
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, data['train_loss'], label='Total Train Loss', color='red')
+    plt.title('Total Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
     plt.grid(True, alpha=0.3)
     plt.legend()
-    save_path1 = os.path.join(output_dir, 'total_loss_curve.png')
-    plt.savefig(save_path1)
-    print(f"Saved Total Loss plot to {save_path1}")
+    plt.savefig(os.path.join(output_dir, 'total_loss_curve.png'))
     plt.close()
 
-    # ------------------------------------------------
-    # Plot 2: All Individual Loss Components
-    # ------------------------------------------------
+    # --- Plot 3: Sub Losses ---
     plt.figure(figsize=(12, 8))
-
-    # 定义不同 loss 的样式，方便区分
     styles = ['-', '--', '-.', ':']
-
-    for i, (loss_name, loss_values) in enumerate(data['sub_losses'].items()):
-        if len(loss_values) == len(epochs):
-            plt.plot(epochs, loss_values, label=loss_name, linestyle=styles[i % len(styles)], linewidth=2)
-
-    plt.title('Detailed Loss Components (Log Scale)')
+    for i, (k, v) in enumerate(data['sub_losses'].items()):
+        plt.plot(epochs, v, label=k, linestyle=styles[i % len(styles)])
+    plt.title('Detailed Loss Components')
     plt.xlabel('Epoch')
-    plt.ylabel('Loss Value (Log Scale)')
-    plt.yscale('log')  # 使用对数坐标，因为不同 Loss 量级差异很大
-    plt.grid(True, alpha=0.3, which='both')
+    plt.ylabel('Loss Value')
+    plt.yscale('log')
     plt.legend()
-    save_path2 = os.path.join(output_dir, 'detailed_loss_components.png')
-    plt.savefig(save_path2)
-    print(f"Saved Components plot to {save_path2}")
+    plt.grid(True, alpha=0.3, which='both')
+    plt.savefig(os.path.join(output_dir, 'detailed_loss_components.png'))
     plt.close()
+
+    print(f"Plots saved to {output_dir}")
 
 
 if __name__ == "__main__":
-    # 自动寻找最新的 log 文件
     log_files = glob.glob('../logs/*.txt')
     if log_files:
-        latest_log = max(log_files, key=os.path.getmtime)
-        print(f"Found latest log: {latest_log}")
-        plot_curves(latest_log)
-    else:
-        print("No log files found in '../Test/logs/*.txt'")
+        latest = max(log_files, key=os.path.getmtime)
+        print(f"Plotting log: {latest}")
+        plot_curves(latest)

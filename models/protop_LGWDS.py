@@ -67,98 +67,9 @@ class LearnableGaborConv1d(nn.Module):
         return magnitude, out_real
 
 
-
-
 # ====================================================================
 # 2. 双流架构组件
 # ====================================================================
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=7, stride=stride, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.gelu = nn.GELU()
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=7, stride=1, padding=3, bias=False)
-        self.bn2 = nn.BatchNorm1d(out_channels)
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm1d(out_channels)
-            )
-
-    def forward(self, x):
-        out = self.gelu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = self.gelu(out)
-        return out
-
-
-class EEGNetProto_Slim(nn.Module):
-    def __init__(self, input_channels, afr_reduced_cnn_size, block, num_blocks, fixed_output_size=256):
-        super(EEGNetProto_Slim, self).__init__()
-        self.in_channels = input_channels
-        self.layer1 = self._make_layer(block, 32, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 64, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 128, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, 128, num_blocks[3], stride=1)
-
-        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_size=fixed_output_size)
-        self.final_conv = nn.Conv1d(128, afr_reduced_cnn_size, kernel_size=1)
-        self.dropout = nn.Dropout(0.5)
-
-    def _make_layer(self, block, out_channels, num_blocks, stride):
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers = []
-        for s in strides:
-            layers.append(block(self.in_channels, out_channels, s))
-            self.in_channels = out_channels
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        out = self.layer1(x)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        out = self.adaptive_pool(out)
-        out = self.dropout(out)
-        out = self.final_conv(out)
-        return out
-
-
-class TCNBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=7, dilation=1, dropout=0.2):
-        super(TCNBlock, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=(kernel_size - 1) * dilation // 2,
-                               dilation=dilation)
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=(kernel_size - 1) * dilation // 2,
-                               dilation=dilation)
-        self.bn2 = nn.BatchNorm1d(out_channels)
-        self.shortcut = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
-
-    def forward(self, x):
-        out = self.dropout(self.gelu(self.bn1(self.conv1(x))))
-        out = self.dropout(self.gelu(self.bn2(self.conv2(out))))
-        res = x if self.shortcut is None else self.shortcut(x)
-        return out + res
-
-
-class EnhancedTCN(nn.Module):
-    def __init__(self, input_dim, num_levels=4, kernel_size=7):
-        super().__init__()
-        layers = []
-        for i in range(num_levels):
-            dilation_size = 2 ** i
-            layers.append(TCNBlock(input_dim, input_dim, kernel_size=kernel_size, dilation=dilation_size))
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.network(x)
-
 
 class SemanticStream(nn.Module):
     """
@@ -168,28 +79,19 @@ class SemanticStream(nn.Module):
 
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        afr_reduced_cnn_size = 128
-
-        self.stem = nn.Sequential(
-            nn.Conv1d(64, 64, kernel_size=31, stride=4, padding=15, bias=False),
-            nn.BatchNorm1d(64), nn.GELU(),
-            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
-            nn.Conv1d(64, 64, kernel_size=15, stride=2, padding=7, bias=False),
-            nn.BatchNorm1d(64), nn.GELU()
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, in_channels * 2, kernel_size=5, padding=2),
+            nn.BatchNorm1d(in_channels * 2),
+            nn.GELU(),
+            nn.MaxPool1d(4),  # 强降采样
+            nn.Conv1d(in_channels * 2, out_channels, kernel_size=5, padding=2),
+            nn.BatchNorm1d(out_channels),
+            nn.GELU(),
+            nn.MaxPool1d(4)  # 再次强降采样
         )
-
-        self.feature_extractor = EEGNetProto_Slim(
-            input_channels=64, afr_reduced_cnn_size=afr_reduced_cnn_size,
-            block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
-        )
-        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
-
 
     def forward(self, x):
-        stem_features = self.stem(x)
-        conv_features = self.feature_extractor(stem_features)
-        temporal_features = self.tcn_layer(conv_features)
-        return temporal_features
+        return self.net(x)
 
 
 class MorphologicalStream(nn.Module):
@@ -204,19 +106,11 @@ class MorphologicalStream(nn.Module):
         self.net = nn.Sequential(
             nn.MaxPool1d(4),
             # Dilation=2
-            nn.Conv1d(in_channels, in_channels, kernel_size=21, padding=8, dilation=4, groups=in_channels),
+            nn.Conv1d(in_channels, in_channels, kernel_size=9, padding=8, dilation=2, groups=in_channels),
             nn.BatchNorm1d(in_channels),
             nn.GELU(),
             # Dilation=4
-            nn.Conv1d(in_channels, in_channels, kernel_size=15, padding=16, dilation=4, groups=in_channels),
-            nn.BatchNorm1d(in_channels),
-            nn.GELU(),
-
-            nn.MaxPool1d(4),
-            nn.Conv1d(in_channels, in_channels, kernel_size=9, padding=16, dilation=2, groups=in_channels),
-            nn.BatchNorm1d(in_channels),
-            nn.GELU(),
-            nn.Conv1d(in_channels, in_channels, kernel_size=9, padding=16, dilation=2, groups=in_channels),
+            nn.Conv1d(in_channels, in_channels, kernel_size=9, padding=16, dilation=4, groups=in_channels),
             nn.BatchNorm1d(in_channels),
             nn.GELU(),
             # 1x1 混合
@@ -272,15 +166,15 @@ class LGWDS_Net(nn.Module):
 
         # 双流
         self.semantic_stream = SemanticStream(64, 128)
-        self.morph_stream = MorphologicalStream(64, 128)
+        self.morph_stream = MorphologicalStream(64, 64)
 
         # 融合
-        self.fusion = HolographicFusion(128, 128)
+        self.fusion = HolographicFusion(64, 128)
 
         self.maxpool = nn.AdaptiveAvgPool1d(777)
 
         # 最终映射到原型维度
-        self.final_proj = nn.Conv1d(128, out_dim, kernel_size=1)
+        self.final_proj = nn.Conv1d(64, out_dim, kernel_size=1)
 
         # 为了降低计算量，我们在融合后做一个温和的 Average Pooling
         # 这样既保留了波形大致轮廓，又减少了原型计算开销
@@ -295,12 +189,14 @@ class LGWDS_Net(nn.Module):
         # 2. 双流处理
         sem_feat = self.semantic_stream(mag)  # [B, 128, 187] (抽象)
         morph_feat = self.morph_stream(raw_real)  # [B, 64, 3000] (具体)
+        # morph_feat = self.maxpool(morph_feat)
+        print(sem_feat.shape, morph_feat.shape)
 
         # 3. 全息融合
         fused = self.fusion(morph_feat, sem_feat)  # [B, 64, 3000]
-
+        print(fused.shape)
         fused = self.maxpool(fused)
-
+        print(fused.shape)
         # 4. 最终输出
         out = self.final_proj(fused)  # [B, 128, 3000]
         out = self.final_pool(out)  # [B, 128, 750] -> 仍保留了足够的时间分辨率
@@ -476,7 +372,7 @@ class ProtoPNet(nn.Module):
         return (logits, self.min_indices) if return_indices else logits
 
 
-'''
+
 import math
 import warnings
 import argparse
@@ -508,4 +404,3 @@ print(f"模型总参数量 (Total Trainable Params): {total_params} M")
 x = torch.rand([64, 1, 30000]).cuda()
 out = model(x)
 print(out, out.shape)
-'''
