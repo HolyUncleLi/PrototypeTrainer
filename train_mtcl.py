@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from utils import *
 from loader import EEGDataLoader
 
-# [IMPORTANT] 导入 V4 模型
+# 导入 V4 模型
 from models.protop_gabor import ProtoPNet
 
 warnings.filterwarnings("ignore")
@@ -36,18 +36,12 @@ class TxtLogger:
             f.write(f"\n{'=' * 20} New Training Session: {time.ctime()} {'=' * 20}\n")
 
     def log_epoch(self, epoch, metrics):
-        """
-        metrics: 包含所有指标的字典
-        """
         line_parts = [f"Epoch: {epoch}"]
-        # 排序 key 保证输出顺序一致
         sorted_keys = sorted(metrics.keys())
         for k in sorted_keys:
             v = metrics[k]
             if isinstance(v, float):
                 line_parts.append(f"{k}: {v:.5f}")
-            elif isinstance(v, int):
-                line_parts.append(f"{k}: {v}")
             else:
                 line_parts.append(f"{k}: {v}")
         log_line = " | ".join(line_parts) + "\n"
@@ -72,8 +66,10 @@ class OneFoldTrainer:
         self.criterion = nn.CrossEntropyLoss(weight=class_weight)
 
         self.optimizer = optim.Adam([p for p in self.model.parameters() if p.requires_grad],
-                                    lr=self.tp_cfg['lr'],
-                                    weight_decay=self.tp_cfg['weight_decay'])
+                                    lr=self.tp_cfg['lr'], weight_decay=self.tp_cfg['weight_decay'])
+
+        # [新增] 初始化自动混合精度(AMP)
+        self.scaler = torch.cuda.amp.GradScaler()
 
         self.ckpt_dir = os.path.join('checkpoints', config['name'] + '_' + str(args.seed))
         if not os.path.exists(self.ckpt_dir): os.makedirs(self.ckpt_dir)
@@ -97,7 +93,7 @@ class OneFoldTrainer:
         model = ProtoPNet(self.cfg)
         print(f'[INFO] Model Params: {sum(p.numel() for p in model.parameters() if p.requires_grad)}')
         if len(self.args.gpu.split(",")) > 1:
-            model = torch.nn.DataParallel(model, device_ids=list(range(len(self.args.gpu.split(",")))))
+            model = torch.nn.DataParallel(model)
         model.to(self.device)
         return model
 
@@ -133,12 +129,10 @@ class OneFoldTrainer:
         class_mask = prototype_class_identity.T[labels]
         inverted_dist = -min_dist
 
-        # Clst
         max_dist_same_class = torch.max(inverted_dist + torch.log(class_mask + 1e-9), dim=1).values
         loss_clst = torch.mean(-max_dist_same_class)
         loss_components['loss_clst'] = self.lambdas['clst'] * loss_clst
 
-        # Sep
         max_dist_diff_class = torch.max(inverted_dist + torch.log(1 - class_mask + 1e-9), dim=1).values
         loss_sep = torch.mean(max_dist_diff_class)
         loss_components['loss_sep'] = self.lambdas['sep'] * loss_sep
@@ -158,8 +152,11 @@ class OneFoldTrainer:
         loss_components['loss_struc'] = self.lambdas['structure'] * loss_struc
 
         learnable_k = model_module.learnable_basis_bank.flatten(1)
-        fixed_k = torch.cat([model_module.gabor_basis_bank.get_kernels().flatten(1).detach(),
-                             model_module.fourier_basis_bank.get_kernels().flatten(1).detach()], dim=0)
+
+        # [优化]: 直接复用缓存的 kernel，不再次调用 get_kernels 重新生成
+        fixed_k = torch.cat([model_module.current_gabor_k.flatten(1).detach(),
+                             model_module.current_fourier_k.flatten(1).detach()], dim=0)
+
         l_norm = F.normalize(learnable_k, p=2, dim=1)
         f_norm = F.normalize(fixed_k, p=2, dim=1)
         similarity = torch.mm(l_norm, f_norm.t())
@@ -179,12 +176,17 @@ class OneFoldTrainer:
             inputs, labels = inputs.to(self.device), labels.view(-1).to(self.device)
             bs = inputs.size(0)
 
-            outputs = self.model(inputs)
-            loss, loss_dict = self.compute_comprehensive_loss(outputs, labels)
-
             self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+
+            # [优化]: 开启自动混合精度上下文
+            with torch.cuda.amp.autocast():
+                outputs = self.model(inputs)
+                loss, loss_dict = self.compute_comprehensive_loss(outputs, labels)
+
+            # [优化]: 使用 scaler 反向传播
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             total_samples += bs
             predicted = torch.argmax(outputs, 1)
@@ -214,8 +216,12 @@ class OneFoldTrainer:
 
         for inputs, labels in self.loader_dict[mode]:
             inputs, labels = inputs.to(self.device), labels.view(-1).to(self.device)
-            outputs = self.model(inputs)
-            loss = self.criterion(outputs, labels)
+
+            # 推理阶段同样可以使用混合精度加速
+            with torch.cuda.amp.autocast():
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, labels)
+
             total_loss += loss.item() * inputs.size(0)
             predicted = torch.argmax(outputs, 1)
             correct += predicted.eq(labels).sum().item()
@@ -261,13 +267,17 @@ def main():
     args = parser.parse_args()
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+
+    # [新增优化] 开启底层 cuDNN 自动优化
+    torch.backends.cudnn.benchmark = True
+
     set_random_seed(args.seed, use_cuda=torch.cuda.is_available())
     with open(args.config) as config_file: config = json.load(config_file)
     config['name'] = os.path.basename(args.config).replace('.json', '')
     config['mode'] = 'normal'
     Y_true = np.zeros(0)
     Y_pred = np.zeros((0, config['classifier']['num_classes']))
-    # for fold in range(1, config['dataset']['num_splits'] + 1):
+
     for fold in range(1, 2):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
