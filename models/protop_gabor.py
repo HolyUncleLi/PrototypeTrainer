@@ -24,7 +24,7 @@ class LearnableGaborConv1d(nn.Module):
         self.padding = kernel_size // 2
 
         # 物理参数初始化
-        # 频率分布在 0.5Hz 到 30Hz 之间 (覆盖 Delta 到 Beta)
+        # 频率分布在 0.5Hz 到 50Hz 之间 (覆盖 Delta 到 Beta)
         self.mu_f = nn.Parameter(torch.rand(out_channels) * 30.0 + 0.5)
         # 带宽 (控制时频分辨率的平衡)
         self.sigma = nn.Parameter(torch.ones(out_channels) * 10.0)
@@ -291,6 +291,25 @@ class LGWDS_Net(nn.Module):
 
         # 1. 物理层
         mag, raw_real = self.gabor_layer(x)  # [B, 64, 3000]
+        print(mag.shape, raw_real.shape)
+
+
+        import numpy as np
+        import matplotlib.pyplot as plt
+        l = 400
+        a = mag[0,0,0:l].detach().cpu().numpy()  # X axis indices
+
+        indices = np.arange(l)
+        plt.plot(indices, a, color='#D6AC4B')
+        plt.show()
+
+        a = raw_real[0, 0, 0:l].detach().cpu().numpy()  # X axis indices
+        indices = np.arange(l)
+        plt.plot(indices, a, color='#9C4844')
+        plt.show()
+
+
+        return False
 
         # 2. 双流处理
         sem_feat = self.semantic_stream(mag)  # [B, 128, 187] (抽象)
@@ -337,7 +356,7 @@ class FourierFilterBank(nn.Module):
         self.num, self.ks = num_filters, kernel_size
         t = torch.linspace(-kernel_size // 2, kernel_size // 2, steps=kernel_size) / sample_rate
         self.register_buffer('t', t)
-        self.A = nn.Parameter(torch.ones(self.num));
+        self.A = nn.Parameter(torch.ones(self.num))
         self.f = nn.Parameter(torch.linspace(1.0, 40.0, num_filters) + torch.randn(num_filters) * 0.5)
         self.phi = nn.Parameter(torch.zeros(self.num))
 
@@ -476,7 +495,7 @@ class ProtoPNet(nn.Module):
         return (logits, self.min_indices) if return_indices else logits
 
 
-'''
+
 import math
 import warnings
 import argparse
@@ -505,7 +524,6 @@ model = ProtoPNet(config).cuda()
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"模型总参数量 (Total Trainable Params): {total_params} M")
 
-x = torch.rand([64, 1, 30000]).cuda()
+x = torch.rand([8, 1, 30000]).cuda()
 out = model(x)
 print(out, out.shape)
-'''

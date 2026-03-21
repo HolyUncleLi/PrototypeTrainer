@@ -401,6 +401,6 @@ model = ProtoPNet(config).cuda()
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"模型总参数量 (Total Trainable Params): {total_params} M")
 
-x = torch.rand([64, 1, 30000]).cuda()
+x = torch.rand([8, 1, 30000]).cuda()
 out = model(x)
 print(out, out.shape)
