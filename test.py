@@ -160,7 +160,7 @@ def main():
         summarize_result(config, fold, Y_true, Y_pred)
 
         '''绘制混淆矩阵'''
-        # cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
+        cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
         '''绘制原型模板图像 & 混合矩阵热力图'''
         '''
