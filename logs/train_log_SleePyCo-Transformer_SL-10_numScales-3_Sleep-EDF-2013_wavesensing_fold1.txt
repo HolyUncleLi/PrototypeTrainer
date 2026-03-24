@@ -117,3 +117,5 @@ Epoch: 44 | loss_cls: 2.56239 | loss_clst: 0.06271 | loss_orth: 0.00088 | loss_s
 Epoch: 45 | loss_cls: 2.69286 | loss_clst: 0.05819 | loss_orth: 0.00093 | loss_sep: -0.04391 | loss_struc: 0.01115 | test_acc: 86.56410 | test_loss: 0.62217 | test_mf1: 80.17657 | train_acc: 98.08865 | train_loss: 2.71922 | val_acc: 90.84955 | val_loss: 0.38345 | val_mf1: 85.62987
 
 ==================== New Training Session: Tue Mar 24 22:42:40 2026 ====================
+
+==================== New Training Session: Tue Mar 24 23:47:27 2026 ====================
