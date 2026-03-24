@@ -115,3 +115,5 @@ Epoch: 42 | loss_cls: 3.14147 | loss_clst: 0.06254 | loss_orth: 0.00098 | loss_s
 Epoch: 43 | loss_cls: 2.67380 | loss_clst: 0.06232 | loss_orth: 0.00092 | loss_sep: -0.04783 | loss_struc: 0.01178 | test_acc: 86.56410 | test_loss: 0.78713 | test_mf1: 78.22002 | train_acc: 98.09954 | train_loss: 2.70098 | val_acc: 90.38721 | val_loss: 0.45713 | val_mf1: 84.06130
 Epoch: 44 | loss_cls: 2.56239 | loss_clst: 0.06271 | loss_orth: 0.00088 | loss_sep: -0.04798 | loss_struc: 0.01137 | test_acc: 85.33333 | test_loss: 0.87470 | test_mf1: 74.24587 | train_acc: 98.26018 | train_loss: 2.58938 | val_acc: 90.17530 | val_loss: 0.47060 | val_mf1: 83.55704
 Epoch: 45 | loss_cls: 2.69286 | loss_clst: 0.05819 | loss_orth: 0.00093 | loss_sep: -0.04391 | loss_struc: 0.01115 | test_acc: 86.56410 | test_loss: 0.62217 | test_mf1: 80.17657 | train_acc: 98.08865 | train_loss: 2.71922 | val_acc: 90.84955 | val_loss: 0.38345 | val_mf1: 85.62987
+
+==================== New Training Session: Tue Mar 24 22:42:40 2026 ====================

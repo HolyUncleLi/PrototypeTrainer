@@ -1,4 +1,6 @@
 # --- train_mtcl_v4.py ---
+# logs下面有训练的曲线变化过程
+
 
 import os
 import sys
@@ -209,6 +211,7 @@ class OneFoldTrainer:
         avg_metrics['train_acc'] = 100. * correct / total_samples
         return avg_metrics
 
+    '''
     @torch.no_grad()
     def evaluate(self, mode='val'):
         self.model.eval()
@@ -234,7 +237,46 @@ class OneFoldTrainer:
         mf1 = skmet.f1_score(y_true, y_pred, average='macro') * 100
         avg_loss = total_loss / total
         return {f'{mode}_acc': acc, f'{mode}_mf1': mf1, f'{mode}_loss': avg_loss}
+    '''
 
+    @torch.no_grad()
+    def evaluate(self, mode):
+        self.model.eval()
+        correct, total, eval_loss = 0, 0, 0
+        y_true = np.zeros(0)
+        y_pred = np.zeros((0, self.cfg['classifier']['num_classes']))
+
+        for i, (inputs, labels) in enumerate(self.loader_dict[mode]):
+            loss = 0
+            total += labels.size(0)
+            inputs = inputs.to(self.device)
+            labels = labels.view(-1).to(self.device)
+
+            outputs = self.model(inputs)
+            outputs_sum = torch.zeros_like(outputs[0])
+
+            for j in range(2):
+                loss += self.criterion(outputs[j], labels)
+                outputs_sum += outputs[j]
+
+            eval_loss += loss.item()
+            predicted = torch.argmax(outputs_sum, 1)
+            correct += predicted.eq(labels).sum().item()
+
+            y_true = np.concatenate([y_true, labels.cpu().numpy()])
+            y_pred = np.concatenate([y_pred, outputs_sum.cpu().numpy()])
+
+            progress_bar(i, len(self.loader_dict[mode]), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+                         % (eval_loss / (i + 1), 100. * correct / total, correct, total))
+
+        if mode == 'val':
+            return 100. * correct / total, eval_loss
+        elif mode == 'test':
+            return y_true, y_pred
+        else:
+            raise NotImplementedError
+
+    '''
     def run(self):
         print(f"\n[INFO] Start Training...")
         for epoch in range(1, self.tp_cfg['max_epochs'] + 1):
@@ -252,6 +294,20 @@ class OneFoldTrainer:
             if self.early_stopping.early_stop:
                 print(f"[INFO] Early stopping triggered.")
                 break
+    '''
+
+    def run(self):
+        for epoch in range(self.tp_cfg['max_epochs']):
+            print('\n[INFO] Fold: {}, Epoch: {}'.format(self.fold, epoch))
+            self.train_one_epoch(epoch)
+            if self.early_stopping.early_stop:
+                break
+
+        self.model.load_state_dict(torch.load(os.path.join(self.ckpt_path, self.ckpt_name)))
+        y_true, y_pred = self.evaluate(mode='test')
+        print('')
+
+        return y_true, y_pred
 
 
 # ====================================================================
