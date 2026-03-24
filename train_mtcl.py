@@ -20,7 +20,8 @@ from utils import *
 from loader import EEGDataLoader
 
 # 导入 V4 模型
-from models.protop_gabor import ProtoPNet
+# from models.protop_gabor import ProtoPNet
+from models.ProtSleepNet_Fast import ProtoPNet
 
 warnings.filterwarnings("ignore")
 CLASS_WEIGHT = [1, 1.5, 1, 1, 1]
