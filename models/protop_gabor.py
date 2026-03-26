@@ -510,8 +510,8 @@ if __name__ == '__main__':
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n==============================================")
-    print(f"✅ 模型总参数量 (Total Trainable Params): {total_params / 1e6:.4f} M")
-    print(f"✅ 目标达成校验: {'通过!' if total_params >= 1.8e6 else '未达标!'} (要求 >= 1.8M)")
+    print(f"模型总参数量 (Total Trainable Params): {total_params / 1e6:.4f} M")
+    print(f"目标达成校验: {'通过!' if total_params >= 1.8e6 else '未达标!'} (要求 >= 1.8M)")
     print(f"==============================================\n")
 
     profiler = BuiltInProfiler(model)

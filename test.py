@@ -12,8 +12,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
-from models.protop_gabor import ProtoPNet
-
+# from models.protop_gabor import ProtoPNet
+from models.ProtSleepNet_Fast import ProtoPNet
 warnings.filterwarnings("ignore")
 
 
@@ -40,7 +40,6 @@ class OneFoldEvaluator:
         self.ckpt_name = f'ckpt_fold-{self.fold:02d}.pth'
 
     def build_model(self):
-        # 确保实例化的是正确的 V2 模型
         model = ProtoPNet(self.cfg)
         print(f"[INFO] Number of params of model: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 

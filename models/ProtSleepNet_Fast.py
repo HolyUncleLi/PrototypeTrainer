@@ -15,10 +15,100 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 # ====================================================================
-# 1. 极限提速模型 (目标: <1ms/模块, 参数量 >1.8M)
+# 1. 基础模块 (保持不变)
+# ====================================================================
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=7, stride=stride, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.gelu = nn.GELU()
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=7, stride=1, padding=3, bias=False)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(out_channels)
+            )
+
+    def forward(self, x):
+        out = self.gelu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.gelu(out)
+        return out
+
+
+class EEGNetProto_Slim(nn.Module):
+    def __init__(self, input_channels, afr_reduced_cnn_size, block, num_blocks, fixed_output_size=256):
+        super(EEGNetProto_Slim, self).__init__()
+        self.in_channels = input_channels
+        self.layer1 = self._make_layer(block, 32, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 64, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 128, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 128, num_blocks[3], stride=1)
+
+        self.adaptive_pool = nn.AdaptiveAvgPool1d(output_size=fixed_output_size)
+        self.final_conv = nn.Conv1d(128, afr_reduced_cnn_size, kernel_size=1)
+        self.dropout = nn.Dropout(0.5)
+
+    def _make_layer(self, block, out_channels, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(block(self.in_channels, out_channels, s))
+            self.in_channels = out_channels
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.layer1(x)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.adaptive_pool(out)
+        out = self.dropout(out)
+        out = self.final_conv(out)
+        return out
+
+class TCNBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=7, dilation=1, dropout=0.2):
+        super(TCNBlock, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=(kernel_size - 1) * dilation // 2,
+                               dilation=dilation)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.gelu = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=(kernel_size - 1) * dilation // 2,
+                               dilation=dilation)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.shortcut = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
+
+    def forward(self, x):
+        out = self.dropout(self.gelu(self.bn1(self.conv1(x))))
+        out = self.dropout(self.gelu(self.bn2(self.conv2(out))))
+        res = x if self.shortcut is None else self.shortcut(x)
+        return out + res
+
+
+class EnhancedTCN(nn.Module):
+    def __init__(self, input_dim, num_levels=4, kernel_size=7):
+        super().__init__()
+        layers = []
+        for i in range(num_levels):
+            dilation_size = 2 ** i
+            layers.append(TCNBlock(input_dim, input_dim, kernel_size=kernel_size, dilation=dilation_size))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.network(x)
+
+
+# ====================================================================
+# 1. Gabor 分支特征提取
 # ====================================================================
 class LearnableGaborConv1d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=63, sample_rate=100.0):
+    def __init__(self, in_channels, out_channels, kernel_size=63, sample_rate=1.0):
         super().__init__()
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -44,8 +134,8 @@ class LearnableGaborConv1d(nn.Module):
     def forward(self, x):
         w_real, w_imag = self.get_filter()
         # [极限优化]: Stride=10, 序列 30000 -> 3000。耗时直接跌破 1ms
-        out_real = F.conv1d(x, w_real, stride=10, padding=self.padding)
-        out_imag = F.conv1d(x, w_imag, stride=10, padding=self.padding)
+        out_real = F.conv1d(x, w_real, stride=1, padding=self.padding)
+        out_imag = F.conv1d(x, w_imag, stride=1, padding=self.padding)
         magnitude = torch.sqrt(out_real.pow(2) + out_imag.pow(2) + 1e-8)
         return magnitude, out_real
 
@@ -53,14 +143,14 @@ class LearnableGaborConv1d(nn.Module):
 class SemanticStream(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        # [超宽 Stem]: 将参数量猛增到 245K，同时步长3，序列 3000 -> 1000
+
+        '''
         self.stem = nn.Sequential(
             nn.Conv1d(in_channels, 256, kernel_size=15, stride=3, padding=7, bias=False),
             nn.BatchNorm1d(256), nn.GELU(),
             nn.MaxPool1d(kernel_size=5, stride=5)  # 序列 1000 -> 200
         )
 
-        # [重型宽核模块]: 在超短序列(200)上做超大通道(384)卷积，耗时极低，参数极大(~1.2M)
         self.heavy_block = nn.Sequential(
             nn.Conv1d(256, 384, kernel_size=5, padding=2, bias=False),
             nn.BatchNorm1d(384), nn.GELU(),
@@ -68,33 +158,88 @@ class SemanticStream(nn.Module):
             nn.BatchNorm1d(384), nn.GELU(),
             nn.Conv1d(384, 128, kernel_size=1)
         )
+        '''
+        self.stem = nn.Sequential(
+            nn.Conv1d(64, 64, kernel_size=31, stride=4, padding=15, bias=False),
+            nn.BatchNorm1d(64), nn.GELU(),
+            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
+            nn.Conv1d(64, 64, kernel_size=15, stride=2, padding=7, bias=False),
+            nn.BatchNorm1d(64), nn.GELU()
+        )
+
+        self.feature_extractor = EEGNetProto_Slim(
+            input_channels=64, afr_reduced_cnn_size=128,
+            block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
+        )
         # 固定尺寸为 194
         self.pool = nn.AdaptiveAvgPool1d(194)
 
     def forward(self, x):
         x = self.stem(x)
-        x = self.heavy_block(x)
+        x = self.feature_extractor(x)
         return self.pool(x)  # 输出 [B, 128, 194]
 
 
 class MorphologicalStream(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels=64, out_channels=128):
         super().__init__()
-        # [极限降维与增参]: 先用池化压短，再用普通大通道卷积补足参数量 (~600K)
-        self.net = nn.Sequential(
-            nn.AvgPool1d(kernel_size=3, stride=3),  # 3000 -> 1000
-            nn.Conv1d(in_channels, 256, kernel_size=9, padding=4),
-            nn.BatchNorm1d(256), nn.GELU(),
-            nn.MaxPool1d(kernel_size=5, stride=5),  # 1000 -> 200
-            nn.Conv1d(256, 256, kernel_size=7, padding=3),
-            nn.BatchNorm1d(256), nn.GELU(),
-            nn.Conv1d(256, out_channels, kernel_size=1)
+
+        # ------------------------------------------------------------------
+        # [阶段 1]: 超大核步长卷积 (The Wide-Sweep Extractor)
+        # 物理意义：kernel=51 相当于 51ms 的物理时间窗，能完整包裹高频尖波/纺锤波的单次震荡。
+        # 用 stride=5 替代原来的 AvgPool，让网络自适应学习降采样，防止尖峰特征被“抹平”。
+        # 序列变化: 30000 -> 6000
+        # 参数量: 64(in) * 96(out) * 51(kernel) = ~313K
+        # ------------------------------------------------------------------
+        self.stem_large_kernel = nn.Sequential(
+            nn.Conv1d(in_channels, 96, kernel_size=51, stride=5, padding=25),
+            nn.BatchNorm1d(96),
+            nn.GELU()
         )
-        self.pool = nn.AdaptiveAvgPool1d(194)
+
+        # ------------------------------------------------------------------
+        # [阶段 2]: 峰值保留降采样
+        # 物理意义：MaxPool 能够在局部时间窗内保留最显著的脑电形态突变(如波峰/波谷)，
+        # 这是典型的 EEG 提纯策略。
+        # 序列变化: 6000 -> 1200
+        # ------------------------------------------------------------------
+        self.pool1 = nn.MaxPool1d(kernel_size=5, stride=5)
+
+        # ------------------------------------------------------------------
+        # [阶段 3]: 宏观形态匹配滤波器 (The Macro-Wave Matched Filter)
+        # 物理意义：[核心亮点] 此时时间序列已经被压缩了 25 倍(5x5)。
+        # 这里的 kernel=21 实际上拥有 21 * 25 = 525 个采样点 (0.525秒) 的等效感受野！
+        # 这个巨大的感受野刚好完美覆盖了一个 K-复合波或慢波(Delta波)的核心物理跨度。
+        # 参数量: 96(in) * 128(out) * 21(kernel) = ~258K
+        # ------------------------------------------------------------------
+        self.macro_large_kernel = nn.Sequential(
+            nn.Conv1d(96, 128, kernel_size=21, padding=10),
+            nn.BatchNorm1d(128),
+            nn.GELU()
+        )
+
+        # ------------------------------------------------------------------
+        # [阶段 4]: 再次安全压缩并对齐
+        # 序列变化: 1200 -> 200
+        # ------------------------------------------------------------------
+        self.pool2 = nn.MaxPool1d(kernel_size=6, stride=6)
+
+        # ------------------------------------------------------------------
+        # [阶段 5]: 最终微调对齐到目标尺寸 (200 -> 194)
+        # 由于前方已经将序列安全压缩到了 200，这里的自适应池化只会做极其轻微的插值调整，
+        # 彻底避免了原始代码中直接用它压榨长序列带来的灾难性信息丢失。
+        # ------------------------------------------------------------------
+        self.final_pool = nn.AdaptiveAvgPool1d(194)
 
     def forward(self, x):
-        x = self.net(x)
-        return self.pool(x)  # 输出 [B, 128, 194]
+        # 验证输入维度
+        x = self.stem_large_kernel(x)  # -> [B, 96, 6000]
+        x = self.pool1(x)  # -> [B, 96, 1200]
+        x = self.macro_large_kernel(x)  # ->[B, 128, 1200]
+        x = self.pool2(x)  # ->[B, 128, 200]
+        out = self.final_pool(x)  # ->[B, 128, 194]
+
+        return out
 
 
 class HolographicFusion(nn.Module):
@@ -239,6 +384,23 @@ class ProtoPNet(nn.Module):
             heads=4,
             dim_head=32
         )
+        '''
+        # 传统mrcnn方法
+        self.stem = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=31, stride=4, padding=15, bias=False),
+            nn.BatchNorm1d(32), nn.GELU(),
+            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
+            nn.Conv1d(32, 64, kernel_size=15, stride=2, padding=7, bias=False),
+            nn.BatchNorm1d(64), nn.GELU()
+        )
+        self.feature_extractor = EEGNetProto_Slim(
+            input_channels=64, afr_reduced_cnn_size=afr_reduced_cnn_size,
+            block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
+        )
+
+        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
+        '''
+
 
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
         self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size, sample_rate=100.0)
@@ -262,11 +424,15 @@ class ProtoPNet(nn.Module):
         self.min_distance, self.min_indices = None, None
 
     def forward(self, x, return_indices=False):
+        # print('x shape: ', x.shape)
+        # x = self.stem(x)
         features = self.feature_extractor(x)
         C = features.shape[1]
-
+        # print('features shape: ', features.shape)
         self.current_gabor_k = self.gabor_basis_bank.get_kernels()
         self.current_fourier_k = self.fourier_basis_bank.get_kernels()
+        # print('gabor_k shape: ', self.current_gabor_k.shape)
+        # print('fourier_k shape: ', self.current_fourier_k.shape)
 
         gabor_kernels = self.current_gabor_k.repeat(1, C, 1)
         fourier_kernels = self.current_fourier_k.repeat(1, C, 1)
@@ -371,7 +537,7 @@ class BuiltInProfiler:
             h.remove()
 
 
-'''
+
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -434,7 +600,8 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
+
+
 '''
 import math
 import warnings

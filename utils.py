@@ -239,7 +239,7 @@ def summarize_result(config, fold, y_true, y_pred, save=True):
     print(colored(' A', 'cyan') + ': Actual Class, ' + colored('P', 'green') + ': Predicted Class' + '\n\n')
     
     if save:
-        with open(os.path.join('results', config['name'] + '.txt'), 'w') as f:
+        with open(os.path.join('results', config['name'] + '.txt'), 'a') as f:
             f.write(
                 str(fold) + ' ' +
                 str(round(result_dict['accuracy']*100, 1)) + ' ' + 
@@ -249,7 +249,7 @@ def summarize_result(config, fold, y_true, y_pred, save=True):
                 str(round(result_dict['1.0']['f1-score']*100, 1)) + ' ' +
                 str(round(result_dict['2.0']['f1-score']*100, 1)) + ' ' +
                 str(round(result_dict['3.0']['f1-score']*100, 1)) + ' ' +
-                str(round(result_dict['4.0']['f1-score']*100, 1)) + ' '
+                str(round(result_dict['4.0']['f1-score']*100, 1)) + '\n'
             )
     if config['mode'] == 'search parameter': 
         return accuracy, macro_f1

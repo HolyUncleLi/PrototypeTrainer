@@ -14,8 +14,6 @@ import json
 # ====================================================================
 # 1. 基础模块 (保持不变)
 # ====================================================================
-# ... (ResidualBlock, EEGNetProto_Slim, GaborFilterBank, FourierFilterBank, TCNBlock, EnhancedTCN 保持不变，此处省略以节省篇幅，请保留原有的这些类) ...
-
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super(ResidualBlock, self).__init__()
@@ -310,7 +308,7 @@ class ProtoPNet(nn.Module):
         temporal_features = self.tcn_layer(conv_features)
 
         C = temporal_features.shape[1]
-
+        print('features shape: ', temporal_features.shape)
         # 1. 获取所有 Basis Kernel
         gabor_kernels = self.gabor_basis_bank.get_kernels().repeat(1, C, 1)
         fourier_kernels = self.fourier_basis_bank.get_kernels().repeat(1, C, 1)
@@ -361,6 +359,6 @@ model = ProtoPNet(config).cuda()
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"模型总参数量 (Total Trainable Params): {total_params} M")
 
-x = torch.rand([64, 1, 30000]).cuda()
+x = torch.rand([8, 1, 30000]).cuda()
 out = model(x)
 print(out, out.shape)
