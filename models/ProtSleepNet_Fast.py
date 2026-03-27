@@ -400,9 +400,8 @@ class ProtoPNet(nn.Module):
             input_channels=64, afr_reduced_cnn_size=afr_reduced_cnn_size,
             block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
         )
-
-        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
         '''
+        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
 
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
@@ -430,6 +429,7 @@ class ProtoPNet(nn.Module):
         # print('x shape: ', x.shape)
         # x = self.stem(x)
         features = self.feature_extractor(x)
+        features = self.tcn_layer(features)
         C = features.shape[1]
         # print('features shape: ', features.shape)
         self.current_gabor_k = self.gabor_basis_bank.get_kernels()
@@ -540,7 +540,7 @@ class BuiltInProfiler:
             h.remove()
 
 
-'''
+
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -603,7 +603,7 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
+
 
 '''
 import math
