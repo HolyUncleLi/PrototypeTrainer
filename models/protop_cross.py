@@ -304,8 +304,11 @@ class ProtoPNet(nn.Module):
 
     def forward(self, x, return_indices=False):
         stem_features = self.stem(x)
+        print('stem shape: ', stem_features.shape)
         conv_features = self.feature_extractor(stem_features)
+        print('conv shape: ', conv_features.shape)
         temporal_features = self.tcn_layer(conv_features)
+        print('tcn shape: ', temporal_features.shape)
 
         C = temporal_features.shape[1]
         print('features shape: ', temporal_features.shape)

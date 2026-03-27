@@ -172,12 +172,14 @@ class SemanticStream(nn.Module):
             block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
         )
         # 固定尺寸为 194
-        self.pool = nn.AdaptiveAvgPool1d(194)
+        self.pool = nn.AdaptiveAvgPool1d(256)
 
     def forward(self, x):
+        # print('SemanticStream in shape: ', x.shape)
         x = self.stem(x)
         x = self.feature_extractor(x)
-        return self.pool(x)  # 输出 [B, 128, 194]
+        # print('SemanticStream out shape: ', x.shape)
+        return x  # 输出 [B, 128, 194]
 
 
 class MorphologicalStream(nn.Module):
@@ -192,7 +194,7 @@ class MorphologicalStream(nn.Module):
         # 参数量: 64(in) * 96(out) * 51(kernel) = ~313K
         # ------------------------------------------------------------------
         self.stem_large_kernel = nn.Sequential(
-            nn.Conv1d(in_channels, 96, kernel_size=51, stride=5, padding=25),
+            nn.Conv1d(in_channels, 96, kernel_size=51, stride=4, padding=25),
             nn.BatchNorm1d(96),
             nn.GELU()
         )
@@ -203,7 +205,7 @@ class MorphologicalStream(nn.Module):
         # 这是典型的 EEG 提纯策略。
         # 序列变化: 6000 -> 1200
         # ------------------------------------------------------------------
-        self.pool1 = nn.MaxPool1d(kernel_size=5, stride=5)
+        self.pool1 = nn.MaxPool1d(kernel_size=4, stride=4)
 
         # ------------------------------------------------------------------
         # [阶段 3]: 宏观形态匹配滤波器 (The Macro-Wave Matched Filter)
@@ -229,16 +231,17 @@ class MorphologicalStream(nn.Module):
         # 由于前方已经将序列安全压缩到了 200，这里的自适应池化只会做极其轻微的插值调整，
         # 彻底避免了原始代码中直接用它压榨长序列带来的灾难性信息丢失。
         # ------------------------------------------------------------------
-        self.final_pool = nn.AdaptiveAvgPool1d(194)
+        self.final_pool = nn.AdaptiveAvgPool1d(256)
 
     def forward(self, x):
         # 验证输入维度
+        # print('MorphologicalStream in shape: ', x.shape)
         x = self.stem_large_kernel(x)  # -> [B, 96, 6000]
         x = self.pool1(x)  # -> [B, 96, 1200]
         x = self.macro_large_kernel(x)  # ->[B, 128, 1200]
         x = self.pool2(x)  # ->[B, 128, 200]
+        # print('MorphologicalStream out shape: ', x.shape)
         out = self.final_pool(x)  # ->[B, 128, 194]
-
         return out
 
 
