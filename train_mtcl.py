@@ -350,7 +350,7 @@ def main():
     # follow train_mtcl default: iterate folds (here using 1..2 for quick runs or use config value)
     num_folds = config['dataset'].get('num_splits', 2)
     # If user wants full cross-validation, they can set num_splits in config.
-    for fold in range(1, 2):
+    for fold in range(2, 3):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])
