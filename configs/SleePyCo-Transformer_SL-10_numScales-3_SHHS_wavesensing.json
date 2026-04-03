@@ -22,37 +22,39 @@
 
     "classifier": {
         "name": "ProtoP",
-        "prototype_shape": [10, 27, 1],
+        "prototype_shape": [20, 128, 15],
         "feedforward_dim": 64,
-
         "block_num": 6,  
         "channel_num": 128,  
         "kernel_size": 9,  
         "repeat_num": 3,  
         "strides_num": 1,  
-        "afr_reduced_dim": 27,  
-
+        "afr_reduced_dim": 128,
         "prototype_num": 10,  
         "feature_dim": 64,  
 
-        "dist_lambda": 17.8373,
         "class_lambda": 50,
+        "dist_lambda": 17.8373,
+        "diversity_lambda": 5.0,
         "identity_lambda": 8.9351,
         "pd_lambda": 7.9252,
-        "weight_lambda": 0.3,
+        "gabor_spec_lambda": 1.5,
+        "fourier_spec_lambda": 1.5,
+        "orth_lambda": 0.1,
+        "weight_lambda": 0.001,
+
         "num_classes": 5,
         "pos_enc": {
             "dropout": false
         }
     },
-
     "training_params": {
         "mode": "freezefinetune",
-        "max_epochs": 5000,
-        "batch_size": 128,
+        "max_epochs": 100,
+        "batch_size": 64,
         "lr": 0.0005,
         "weight_decay": 0.0001,
-        "val_period": 5000,
+        "val_period": 20,
         "early_stopping": {
             "mode": "max",
             "patience": 50
