@@ -776,7 +776,7 @@ class BuiltInProfiler:
             h.remove()
 
 
-'''
+
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -839,7 +839,7 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
+
 
 '''
 import math
@@ -872,7 +872,7 @@ model = ProtoPNet(config).cuda()
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"模型总参数量 (Total Trainable Params): {total_params} M")
 
-x = torch.rand([8, 1, 30000]).cuda()
+x = torch.rand([8, 1, 37500]).cuda()
 start = time.time()
 out = model(x)
 torch.cuda.synchronize()  # 确保 GPU 完成计算

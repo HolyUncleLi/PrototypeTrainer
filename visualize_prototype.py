@@ -7,8 +7,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 import matplotlib.gridspec as gridspec
-import json
-import os
 import sys
 
 
@@ -16,17 +14,18 @@ import sys
 # 辅助函数
 # =============================================================================
 
-def get_key_waveform_from_indices(signal_epoch, activation_idx, model_stem,
+def get_key_waveform_from_indices(signal_epoch, activation_idx,
                                   proto_kernel_size_in_feature_space, sample_rate):
-    total_stride = 1
-    for layer in model_stem:
-        if hasattr(layer, 'stride'):
-            stride_val = layer.stride
-            if isinstance(stride_val, tuple):
-                total_stride *= stride_val[0]
-            else:
-                total_stride *= stride_val
+    """
+    【修正点 1】：不再依赖遍历 model.stem 来计算 stride。
+    针对 ProtSleepNet_Fast 架构，输入序列长 30000，特征层因 AdaptiveAvgPool1d 被固定为 256。
+    因此等效步长 (stride ratio) 就是 input_len / latent_len。
+    """
+    input_len = 30000
+    latent_len = 256
+    total_stride = input_len / latent_len
 
+    # 计算在原始 30000 长度信号中的起止索引
     start_idx_in_signal = int(activation_idx * total_stride)
     proto_len_in_signal = int(proto_kernel_size_in_feature_space * total_stride)
     end_idx_in_signal = start_idx_in_signal + proto_len_in_signal
@@ -39,22 +38,27 @@ def get_key_waveform_from_indices(signal_epoch, activation_idx, model_stem,
 
 
 def generate_publication_figure(model, data_loader, device, class_names, sample_rate=100):
-    print("--- Generating Final Publication Figure ---")
+    print("\n--- Generating Final Publication Figure ---")
     is_parallel = isinstance(model, nn.DataParallel)
     model_to_access = model.module if is_parallel else model
-    model.eval()
-    model.to(device)
+    model_to_access.eval()
+    model_to_access.to(device)
 
     num_prototypes = model_to_access.num_composite_prototypes
 
     print("Step 1: Searching for best matching signal for each prototype...")
     best_matches = {i: {'min_dist': float('inf')} for i in range(num_prototypes)}
+
     with torch.no_grad():
         for inputs, _ in data_loader:
             inputs = inputs.to(device)
-            _ = model(inputs)
+            # 【修正点 2】：强制使用解包后的 model_to_access 进行前向传播，
+            # 防止 DataParallel 吞掉 forward 内部保存的 self.min_distance 属性
+            _ = model_to_access(inputs)
+
             batch_min_dists = model_to_access.min_distance
             batch_indices = model_to_access.min_indices
+
             for p_idx in range(num_prototypes):
                 min_val, min_batch_idx = torch.min(batch_min_dists[:, p_idx], dim=0)
                 if min_val.item() < best_matches[p_idx]['min_dist']:
@@ -70,20 +74,20 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
     learnable_kernels = model_to_access.learnable_basis_bank.data.squeeze(1)
     all_basis_kernels = torch.cat([gabor_kernels, fourier_kernels, learnable_kernels], dim=0)
 
-    # 【注意】通过 .mixing_weights 属性获取完整矩阵，并 .detach()
     full_weights = model_to_access.mixing_weights.detach()
-
     reconstructed_prototypes = torch.matmul(full_weights, all_basis_kernels).cpu().detach().numpy()
 
     fc_weights = model_to_access.fc.weight.data.cpu().detach().numpy()
     vmin, vmax = 0, max(1, fc_weights.max())
 
     print("Step 3: Creating and laying out the figure...")
-    fig = plt.figure(figsize=(15, 0.7 * num_prototypes))
+    # 动态调整画图尺寸，避免原型过多导致图片崩溃
+    plot_num = min(num_prototypes, 20)  # 如果原型太多(如300个)，建议这里限制最多画前20个，否则内存溢出
+    fig = plt.figure(figsize=(15, 0.7 * plot_num))
     gs = gridspec.GridSpec(
-        num_prototypes + 1, 4,
+        plot_num + 1, 4,
         figure=fig,
-        height_ratios=[0.5] + [1] * num_prototypes,
+        height_ratios=[0.5] + [1] * plot_num,
         width_ratios=[1.2, 2, 2, 4],
         hspace=0.2, wspace=0.15
     )
@@ -101,7 +105,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
     axes_to_hide = fig.add_subplot(gs[0, 0])
     axes_to_hide.axis('off')
 
-    for p_idx in range(num_prototypes):
+    for p_idx in range(plot_num):
         row_idx = p_idx + 1
 
         ax_ylabel = fig.add_subplot(gs[row_idx, 0])
@@ -111,10 +115,10 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
 
         ax_wave1 = fig.add_subplot(gs[row_idx, 1])
         if 'signal_epoch' in best_matches[p_idx]:
+            # 【修正点 3】：移除了对 model_stem 的调用参数
             wavelet = get_key_waveform_from_indices(
                 best_matches[p_idx]['signal_epoch'],
                 best_matches[p_idx]['activation_idx'],
-                model_to_access.stem,
                 model_to_access.prototype_kernel_size,
                 sample_rate
             )
@@ -150,22 +154,20 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
     cbar.ax.tick_params(labelsize=8)
 
     fig.subplots_adjust(left=0.05, right=0.89, top=0.92, bottom=0.05)
-    plt.show()
+    # 保存结果，防止弹窗阻塞
+    plt.savefig('./results/prototype_vis.svg', bbox_inches='tight')
+    print("Saved Prototype Visualization to ./results/prototype_vis.svg")
+    # plt.show() # 如果在服务器上运行，建议注释掉 plt.show()
 
 
 def plot_mixing_weights_heatmap(model, device):
-    """
-    【FIGURE 2】Generates the heatmap of the mixing_weights matrix with Block Diagonal structure.
-    """
     print("\n--- Generating Figure 2: Basis Prototype Mixing Matrix ---")
     is_parallel = isinstance(model, nn.DataParallel)
     model_to_access = model.module if is_parallel else model
-    model.eval()
-    model.to(device)
+    model_to_access.eval()
+    model_to_access.to(device)
 
-    # 【关键】这里会调用 Property，自动生成带0填充的阶梯状矩阵
     weights = model_to_access.mixing_weights.detach().cpu().numpy()
-
     num_composite, num_basis = weights.shape
 
     num_g = model_to_access.num_gabor_basis
@@ -176,7 +178,13 @@ def plot_mixing_weights_heatmap(model, device):
     im = ax.imshow(weights, cmap='viridis', aspect='auto', interpolation='nearest')
 
     ax.set_yticks(np.arange(num_composite))
-    ax.set_yticklabels([f"Composite P{i}" for i in range(num_composite)])
+
+    # 防止复合原型数量达到几百个时坐标轴标签糊作一团，适当稀疏显示
+    if num_composite > 50:
+        ax.set_yticks(np.arange(0, num_composite, 10))
+        ax.set_yticklabels([f"Composite P{i}" for i in range(0, num_composite, 10)])
+    else:
+        ax.set_yticklabels([f"Composite P{i}" for i in range(num_composite)])
 
     x_labels = [f"G{i}" for i in range(num_g)] + \
                [f"F{i}" for i in range(num_f)] + \
@@ -187,43 +195,14 @@ def plot_mixing_weights_heatmap(model, device):
     ax.set_xlabel("Basis Prototypes (G: Gabor, F: Fourier, L: Learnable)", fontsize=12)
     ax.set_ylabel("Composite Prototypes", fontsize=12)
 
-    # 绘制分隔线
     ax.axvline(x=num_g - 0.5, color='white', linestyle='--', linewidth=2)
     ax.axvline(x=num_g + num_f - 0.5, color='white', linestyle='--', linewidth=2)
 
-    '''
-    # 绘制水平分隔线 (根据 splits)
-    splits = model_to_access.proto_splits
-    ax.axhline(y=splits[0] - 0.5, color='white', linestyle='--', linewidth=2)
-    ax.axhline(y=splits[0] + splits[1] - 0.5, color='white', linestyle='--', linewidth=2)
-    '''
-    ax.set_title("Mixing Weights: Distinct Prototype Families (Block Diagonal)", fontsize=16, pad=20)
+    ax.set_title("Mixing Weights: Distinct Prototype Families", fontsize=16, pad=20)
     cbar = fig.colorbar(im, ax=ax, orientation='vertical')
     cbar.set_label('Mixing Weight Value', fontsize=12)
 
     plt.tight_layout()
-    plt.show()
-
-
-if __name__ == "__main__":
-    try:
-        from models.protop_cross import ProtoPNet
-    except ImportError:
-        print("ERROR: Could not import 'ProtoPNet'. Make sure protop_cross.py is in 'models/' folder.")
-        sys.exit(1)
-
-    # Mock Config
-    config = {'classifier': {'afr_reduced_dim': 128, 'num_classes': 5, 'prototype_num': 20,
-                             'prototype_shape': [20, 128, 15]}}
-
-    model = ProtoPNet(config)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    dummy_loader = DataLoader(
-        TensorDataset(torch.randn(64, 1, 30000), torch.randint(0, 5, (64,))),
-        batch_size=32
-    )
-    class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-
-    generate_publication_figure(model, dummy_loader, device, class_names)
-    plot_mixing_weights_heatmap(model, device)
+    plt.savefig('./results/mixing_weights.svg', bbox_inches='tight')
+    print("Saved Mixing Weights to ./results/mixing_weights.svg")
+    # plt.show()
