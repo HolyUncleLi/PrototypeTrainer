@@ -108,7 +108,7 @@ class EEGDataLoader(Dataset):
                 if subject_idx in split_idx_list[self.fold - 1][self.set]:
                     data_fname_dict[self.set].append(data_fname_list[i])
 
-        elif self.dset_name == 'MASS' or self.dset_name == 'Physio2018' or self.dset_name == 'shhs':
+        elif self.dset_name == 'MASS' or self.dset_name == 'Physio2018' or self.dset_name == 'SHHS':
             for i in range(len(data_fname_list)):
                 print('xxxx',self.fold,self.set)
                 print('xxxxx', i, split_idx_list[self.fold - 1][self.set])

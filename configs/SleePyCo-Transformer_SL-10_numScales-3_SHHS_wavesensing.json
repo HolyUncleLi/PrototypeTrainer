@@ -1,6 +1,6 @@
 {
     "dataset": {
-        "name": "shhs",
+        "name": "SHHS",
         "eeg_channel": "C4-A1",
         "num_splits": 1,
         "seq_len": 10,
