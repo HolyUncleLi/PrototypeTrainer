@@ -6,7 +6,7 @@
         "seq_len": 10,
         "sampleing_rate": 125,
         "target_idx": -1,
-        "root_dir": "/summer/ProtoPSleep/"
+        "root_dir": "./"
     },
 
     "backbone": {

@@ -119,3 +119,11 @@ Epoch: 45 | loss_cls: 2.69286 | loss_clst: 0.05819 | loss_orth: 0.00093 | loss_s
 ==================== New Training Session: Tue Mar 24 22:42:40 2026 ====================
 
 ==================== New Training Session: Tue Mar 24 23:47:27 2026 ====================
+
+==================== New Training Session: Tue Apr 28 21:27:23 2026 ====================
+
+==================== New Training Session: Wed Apr 29 00:33:43 2026 ====================
+
+==================== New Training Session: Wed Apr 29 09:44:55 2026 ====================
+
+==================== New Training Session: Wed Apr 29 10:31:18 2026 ====================

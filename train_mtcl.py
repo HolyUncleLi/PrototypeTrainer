@@ -328,6 +328,7 @@ def main():
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--config', type=str,
                         # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
+                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2018_wavesensing.json',
                         default='./configs/SleePyCo-Transformer_SL-10_numScales-3_SHHS_wavesensing.json',
                         help='config file path')
     args = parser.parse_args()
@@ -351,7 +352,7 @@ def main():
     # follow train_mtcl default: iterate folds (here using 1..2 for quick runs or use config value)
     num_folds = config['dataset'].get('num_splits', 2)
     # If user wants full cross-validation, they can set num_splits in config.
-    for fold in range(12, num_folds+1):
+    for fold in range(1, num_folds+1):
         trainer = OneFoldTrainer(args, fold, config)
         y_true, y_pred = trainer.run()
         Y_true = np.concatenate([Y_true, y_true])
