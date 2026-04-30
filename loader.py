@@ -89,7 +89,7 @@ class EEGDataLoader(Dataset):
         data_fname_dict = {'train': [], 'test': [], 'val': []}
         # data_fname_dict = {'train': [], 'test': []}
         split_idx_list = np.load(os.path.join('./split_idx', 'idx_{}.npy'.format(self.dset_name)), allow_pickle=True)
-
+        print(data_root)
         assert len(split_idx_list) == self.num_splits
 
         if self.dset_name == 'Sleep-EDF-2013':
@@ -104,6 +104,9 @@ class EEGDataLoader(Dataset):
 
         elif self.dset_name == 'Sleep-EDF-2018':
             for i in range(len(data_fname_list)):
+                # print('y',self.fold,self.set)
+                # print('yy', i, split_idx_list[self.fold - 1][self.set])
+                # print('yyy', data_fname_list[i])
                 subject_idx = int(data_fname_list[i][3:5])
                 if subject_idx in split_idx_list[self.fold - 1][self.set]:
                     data_fname_dict[self.set].append(data_fname_list[i])
@@ -120,7 +123,6 @@ class EEGDataLoader(Dataset):
         print(111, self.set)
         print(222, data_fname_dict[self.set])
         for data_fname in data_fname_dict[self.set]:
-            print(data_root, '222', data_fname)
             npz_file = np.load(os.path.join(data_root, data_fname))
             inputs.append(npz_file['x'])
             labels.append(npz_file['y'])
@@ -131,4 +133,4 @@ class EEGDataLoader(Dataset):
             for i in range(len(npz_file['y']) - seq_len + 1):
                 epochs.append([file_idx, i, seq_len])
             file_idx += 1
-            return inputs, labels, epochs
+        return inputs, labels, epochs
