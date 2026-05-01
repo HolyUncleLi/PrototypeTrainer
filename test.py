@@ -135,7 +135,9 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path',
-                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
+                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
+                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2018_wavesensing.json',
+                        )
     args = parser.parse_args()
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -162,11 +164,12 @@ def main():
         cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
         '''绘制原型模板图像 & 混合矩阵热力图'''
+        '''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
         plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
-
+        '''
 
         '''
         # 原生版本，弃用
