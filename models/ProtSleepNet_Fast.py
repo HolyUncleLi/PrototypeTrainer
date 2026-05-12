@@ -14,7 +14,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-
 class SEBlock(nn.Module):
     def __init__(self, in_dim, reduction=16):
         super().__init__()
@@ -37,10 +36,9 @@ class LayerNorm(nn.Module):
 
     def __init__(self, channels, eps=1e-6, data_format="channels_last"):
         super(LayerNorm, self).__init__()
-        self.norm = nn.Layernorm(channels)
+        self.norm = nn.LayerNorm(channels)
 
     def forward(self, x):
-
         B, M, D, N = x.shape
         x = x.permute(0, 1, 3, 2)
         x = x.reshape(B * M, N, D)
@@ -59,7 +57,7 @@ def get_bn(channels):
     return nn.BatchNorm1d(channels)
 
 
-def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups, dilation=1,bias=False,isFTConv=True):
+def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups, dilation=1, bias=False, isFTConv=True):
     if padding is None:
         padding = kernel_size // 2
     result = nn.Sequential()
@@ -70,7 +68,6 @@ def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups, dil
 
 
 def fuse_bn(conv, bn):
-
     kernel = conv.weight
     running_mean = bn.running_mean
     running_var = bn.running_var
@@ -98,12 +95,13 @@ class ReparamLargeKernelConv(nn.Module):
                                          stride=stride, padding=padding, dilation=1, groups=groups, bias=True)
         else:
             self.lkb_origin = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size,
-                                        stride=stride, padding=padding, dilation=1, groups=groups,bias=False)
+                                      stride=stride, padding=padding, dilation=1, groups=groups, bias=False)
             if small_kernel is not None:
                 assert small_kernel <= kernel_size, 'The kernel size for re-param cannot be larger than the large kernel!'
                 self.small_conv = conv_bn(in_channels=in_channels, out_channels=out_channels,
-                                            kernel_size=small_kernel,
-                                            stride=stride, padding=small_kernel // 2, groups=groups, dilation=1,bias=False)
+                                          kernel_size=small_kernel,
+                                          stride=stride, padding=small_kernel // 2, groups=groups, dilation=1,
+                                          bias=False)
 
     def forward(self, inputs):
 
@@ -118,9 +116,9 @@ class ReparamLargeKernelConv(nn.Module):
     def PaddingTwoEdge1d(self, x, pad_length_left, pad_length_right, pad_values=0):
 
         D_out, D_in, ks = x.shape
-        if pad_values ==0:
-            pad_left = torch.zeros(D_out,D_in,pad_length_left).cuda()
-            pad_right = torch.zeros(D_out,D_in,pad_length_right).cuda()
+        if pad_values == 0:
+            pad_left = torch.zeros(D_out, D_in, pad_length_left).cuda()
+            pad_right = torch.zeros(D_out, D_in, pad_length_right).cuda()
         else:
             pad_left = torch.ones(D_out, D_in, pad_length_left).cuda() * pad_values
             pad_right = torch.ones(D_out, D_in, pad_length_right).cuda() * pad_values
@@ -154,7 +152,6 @@ class ReparamLargeKernelConv(nn.Module):
 
 class Block(nn.Module):
     def __init__(self, large_size, small_size, dmodel, dff, nvars, small_kernel_merged=False, drop=0.05):
-
         super(Block, self).__init__()
 
         self.dw = ReparamLargeKernelConv(in_channels=nvars * dmodel, out_channels=nvars * dmodel,
@@ -163,33 +160,30 @@ class Block(nn.Module):
         self.norm = nn.BatchNorm1d(dmodel)
         self.se = SEBlock(in_dim=dmodel)
 
-        #convffn1
+        # convffn1
         self.ffn1pw1 = nn.Conv1d(in_channels=nvars * dmodel, out_channels=nvars * dff, kernel_size=1, stride=1,
                                  padding=0, dilation=1, groups=nvars)
-        # self.ffn1act1 = nn.GELU()
         self.ffn1act1 = nn.PReLU()
         self.ffn1norm1 = nn.BatchNorm1d(nvars * dff)
         self.ffn1pw2 = nn.Conv1d(in_channels=nvars * dff, out_channels=nvars * dmodel, kernel_size=1, stride=1,
                                  padding=0, dilation=1, groups=nvars)
         self.ffn1norm2 = nn.BatchNorm1d(nvars * dmodel)
-        # self.ffn1act2 = nn.GELU()
         self.ffn1act2 = nn.PReLU()
         self.ffn1drop1 = nn.Dropout(drop)
         self.ffn1drop2 = nn.Dropout(drop)
 
-        self.ffn_ratio = dff//dmodel
+        self.ffn_ratio = dff // dmodel
         self.shortcut = nn.Conv1d(in_channels=nvars * dmodel, out_channels=nvars * dmodel, kernel_size=1, stride=1,
-                                 padding=0, dilation=1)
+                                  padding=0, dilation=1)
 
     def forward(self, x):
-
         input = x
         B, M, D, N = x.shape
-        x = x.reshape(B, M*D, N)
+        x = x.reshape(B, M * D, N)
 
         x = self.dw(x)
         x = x.reshape(B, M, D, N)
-        x = x.reshape(B*M, D, N)
+        x = x.reshape(B * M, D, N)
         x = self.norm(x)
         x = x.reshape(B, M, D, N)
         x = x.reshape(B, M * D, N)
@@ -212,7 +206,8 @@ class Stage(nn.Module):
         d_ffn = dmodel * ffn_ratio
         blks = []
         for i in range(num_blocks):
-            blk = Block(large_size=large_size, small_size=small_size, dmodel=dmodel, dff=d_ffn, nvars=nvars, small_kernel_merged=small_kernel_merged, drop=drop)
+            blk = Block(large_size=large_size, small_size=small_size, dmodel=dmodel, dff=d_ffn, nvars=nvars,
+                        small_kernel_merged=small_kernel_merged, drop=drop)
             blks.append(blk)
         self.blocks = nn.ModuleList(blks)
 
@@ -230,7 +225,7 @@ class ModernTCN(nn.Module):
         self.batchsize = 64
         self.seq_len = 10
         self.channeldim = 128
-        self.featuredim = 80  # seq len * 8
+        self.featuredim = 80
         self.embeddim = 80
         self.patch_size = 16
         self.patch_stride = 8
@@ -238,7 +233,6 @@ class ModernTCN(nn.Module):
         self.class_num = 5
         self.num_stage = 2
 
-        # stem layer & down sampling layers
         self.downsample_layers = nn.ModuleList()
         stem = nn.Sequential(
             nn.Conv1d(64, 64, kernel_size=16, stride=8),
@@ -251,10 +245,9 @@ class ModernTCN(nn.Module):
         )
         self.downsample_layers.append(downsample_layer)
 
-        # cnn backbone
         self.num_stage = 2
         self.stages = nn.ModuleList()
-        layer = Stage(4, 1, 51,5, dmodel=64, dw_model=64, nvars=1, small_kernel_merged=False, drop=0.1)
+        layer = Stage(4, 1, 51, 5, dmodel=64, dw_model=64, nvars=1, small_kernel_merged=False, drop=0.1)
         self.stages.append(layer)
         layer = Stage(4, 1, 31, 5, dmodel=128, dw_model=128, nvars=1, small_kernel_merged=False, drop=0.1)
         self.stages.append(layer)
@@ -262,20 +255,16 @@ class ModernTCN(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool1d(256)
         self.flatten = nn.Flatten()
 
-
     def forward_feature(self, x):
-        # x: [B, C, N]
         B, C, N = x.shape
 
-        # 把 C 合并到 D 维度
-        x = x.unsqueeze(2)  # [B, C, 1, N]
-        x = x.reshape(B, 1, C, N)  # [B, M=1, D=C, N]
+        x = x.unsqueeze(2)
+        x = x.reshape(B, 1, C, N)
         for i in range(self.num_stage):
             B, M, D, N = x.shape
             x = x.reshape(B * M, D, N)
             if i == 0:
                 if self.patch_size != self.patch_stride:
-                    # stem layer padding
                     pad_len = self.patch_size - self.patch_stride
                     pad = x[:, :, -1:].repeat(1, 1, pad_len)
                     x = torch.cat([x, pad], dim=-1)
@@ -292,15 +281,14 @@ class ModernTCN(nn.Module):
         return x
 
     def classification2(self, x, tags=None):
-        # lkcnn backbone
         x = self.forward_feature(x).squeeze()
-        # print("lksleepnet embed shape: ", x.shape)
         x = self.avgpool(x)
         return x
 
     def forward(self, x, tags=None, pre_stage=2):
         x = self.classification2(x, tags=tags)
         return x
+
 
 # ====================================================================
 # 1. 基础模块 (保持不变)
@@ -358,6 +346,7 @@ class EEGNetProto_Slim(nn.Module):
         out = self.dropout(out)
         out = self.final_conv(out)
         return out
+
 
 class TCNBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=7, dilation=1, dropout=0.2):
@@ -421,7 +410,6 @@ class LearnableGaborConv1d(nn.Module):
 
     def forward(self, x):
         w_real, w_imag = self.get_filter()
-        # [极限优化]: Stride=10, 序列 30000 -> 3000。耗时直接跌破 1ms
         out_real = F.conv1d(x, w_real, stride=1, padding=self.padding)
         out_imag = F.conv1d(x, w_imag, stride=1, padding=self.padding)
         magnitude = torch.sqrt(out_real.pow(2) + out_imag.pow(2) + 1e-8)
@@ -431,22 +419,6 @@ class LearnableGaborConv1d(nn.Module):
 class SemanticStream(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-
-        '''
-        self.stem = nn.Sequential(
-            nn.Conv1d(in_channels, 256, kernel_size=15, stride=3, padding=7, bias=False),
-            nn.BatchNorm1d(256), nn.GELU(),
-            nn.MaxPool1d(kernel_size=5, stride=5)  # 序列 1000 -> 200
-        )
-
-        self.heavy_block = nn.Sequential(
-            nn.Conv1d(256, 384, kernel_size=5, padding=2, bias=False),
-            nn.BatchNorm1d(384), nn.GELU(),
-            nn.Conv1d(384, 384, kernel_size=5, padding=2, bias=False),
-            nn.BatchNorm1d(384), nn.GELU(),
-            nn.Conv1d(384, 128, kernel_size=1)
-        )
-        '''
         self.stem = nn.Sequential(
             nn.Conv1d(64, 64, kernel_size=31, stride=4, padding=15, bias=False),
             nn.BatchNorm1d(64), nn.GELU(),
@@ -459,21 +431,17 @@ class SemanticStream(nn.Module):
             input_channels=64, afr_reduced_cnn_size=128,
             block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
         )
-        # 固定尺寸为 194
         self.pool = nn.AdaptiveAvgPool1d(256)
 
     def forward(self, x):
-        # print('SemanticStream in shape: ', x.shape)
         x = self.stem(x)
         x = self.feature_extractor(x)
-        # print('SemanticStream out shape: ', x.shape)
-        return x  # 输出 [B, 128, 194]
+        return x
 
 
 class MorphologicalStream(nn.Module):
     def __init__(self, in_channels=64, out_channels=128):
         super().__init__()
-
         self.tcn = ModernTCN()
 
     def forward(self, x):
@@ -516,7 +484,7 @@ class LGWDS_Net(nn.Module):
 
 
 # ====================================================================
-# 辅组模块 [保持原型]
+# 辅组模块
 # ====================================================================
 class GaborFilterBank(nn.Module):
     def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
@@ -552,6 +520,9 @@ class FourierFilterBank(nn.Module):
         return A * torch.cos(2 * torch.pi * f * t + phi)
 
 
+# ====================================================================
+# 【重构】波形感知交叉注意力匹配模块 (Waveform-Aware Cross Attention)
+# ====================================================================
 class MultiLatentSpaceSimilarity(nn.Module):
     def __init__(self, dim, splits, heads=4, dim_head=32):
         super().__init__()
@@ -559,38 +530,59 @@ class MultiLatentSpaceSimilarity(nn.Module):
         self.heads = heads
         self.scale = dim_head ** -0.5
         inner_dim = dim_head * heads
-        self.q_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
-        self.k_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
-        self.v_projs = nn.ModuleList([nn.Linear(dim, inner_dim, bias=False) for _ in range(3)])
+
+        # 核心改动：引入一维卷积替代 nn.Linear，赋予注意力机制“局部波形感知能力”
+        self.q_projs = nn.ModuleList([
+            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, groups=4, bias=False) for _ in range(3)
+        ])
+        self.k_projs = nn.ModuleList([
+            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, groups=4, bias=False) for _ in range(3)
+        ])
+        self.v_projs = nn.ModuleList([
+            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, groups=4, bias=False) for _ in range(3)
+        ])
 
     def forward(self, x, prototypes):
+        # x: [Batch, C, Seq_len]
+        # prototypes: [P, C, L]
         batch_size, C, seq_len = x.shape
         _, _, proto_len = prototypes.shape
-        x_perm = x.permute(0, 2, 1)
-        proto_groups = torch.split(prototypes, self.splits, dim=0)
 
+        proto_groups = torch.split(prototypes, self.splits, dim=0)
         all_distances, all_indices = [], []
 
         for i, p_group in enumerate(proto_groups):
             num_p_group = p_group.shape[0]
             if num_p_group == 0: continue
 
-            p_perm = p_group.permute(0, 2, 1)
-            q_proj = self.q_projs[i](p_perm)
-            q = q_proj.view(num_p_group, proto_len, self.heads, -1).permute(2, 0, 1, 3)
+            # 对 Prototype (长度 L) 进行局部形态提取 -> shape: [num_p_group, inner_dim, L]
+            q_proj = self.q_projs[i](p_group)
+            # 扩展多头: [num_p_group, heads, dim_head, L]
+            q = q_proj.view(num_p_group, self.heads, -1, proto_len)
 
-            k = self.k_projs[i](x_perm).view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
-            v = self.v_projs[i](x_perm).view(batch_size, seq_len, self.heads, -1).permute(0, 2, 1, 3)
+            # 对脑电特征序列进行局部形态提取 -> shape: [Batch, inner_dim, Seq_len]
+            k_proj = self.k_projs[i](x)
+            v_proj = self.v_projs[i](x)
+            # 扩展多头: [Batch, heads, dim_head, Seq_len]
+            k = k_proj.view(batch_size, self.heads, -1, seq_len)
+            v = v_proj.view(batch_size, self.heads, -1, seq_len)
 
-            dots = torch.einsum('hpld,bhsd->bhpls', q, k) * self.scale
+            # 跨时间维度的注意力矩阵点积计算
+            # Q: [P, H, D, L]  ,  K: [B, H, D, S] -> dots: [B, P, H, L, S]
+            dots = torch.einsum('phdl, bhds -> bphls', q, k) * self.scale
             attn = dots.softmax(dim=-1)
 
-            out = torch.einsum('bhpls,bhsd->bhpld', attn, v)
-            out = out.permute(0, 2, 3, 1, 4).reshape(batch_size, num_p_group, proto_len, -1)
+            # 根据注意力汇聚 Value 序列
+            # V: [B, H, D, S] -> out: [B, P, H, D, L]
+            out = torch.einsum('bphls, bhds -> bphdl', attn, v)
+            # 还原形状为: [B, P, inner_dim, L]
+            out = out.reshape(batch_size, num_p_group, -1, proto_len)
 
+            # 距离度量：将汇聚回来的波形与原始原型波形求 MSE 距离
             dist = F.mse_loss(q_proj.unsqueeze(0), out, reduction='none').mean(dim=[2, 3])
 
-            heatmap = attn.mean(dim=[1, 3])
+            # 获取匹配位点用于可解释性
+            heatmap = attn.mean(dim=[2, 3])
             indices = heatmap.argmax(dim=-1)
 
             all_distances.append(dist)
@@ -599,6 +591,9 @@ class MultiLatentSpaceSimilarity(nn.Module):
         return torch.cat(all_distances, dim=1), torch.cat(all_indices, dim=1)
 
 
+# ====================================================================
+# 【重构】ProtoPNet 主框架：物理基底字典 + Einsum
+# ====================================================================
 class ProtoPNet(nn.Module):
     def __init__(self, config):
         super(ProtoPNet, self).__init__()
@@ -615,6 +610,7 @@ class ProtoPNet(nn.Module):
         num_classes = self.cfg['classifier']['num_classes']
 
         self.feature_extractor = LGWDS_Net(out_dim=afr_reduced_cnn_size)
+        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
         self.similarity_calculator = MultiLatentSpaceSimilarity(
             dim=afr_reduced_cnn_size,
@@ -622,63 +618,51 @@ class ProtoPNet(nn.Module):
             heads=4,
             dim_head=32
         )
-        '''
-        # 传统mrcnn方法
-        self.stem = nn.Sequential(
-            nn.Conv1d(1, 32, kernel_size=31, stride=4, padding=15, bias=False),
-            nn.BatchNorm1d(32), nn.GELU(),
-            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
-            nn.Conv1d(32, 64, kernel_size=15, stride=2, padding=7, bias=False),
-            nn.BatchNorm1d(64), nn.GELU()
-        )
-        self.feature_extractor = EEGNetProto_Slim(
-            input_channels=64, afr_reduced_cnn_size=afr_reduced_cnn_size,
-            block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
-        )
-        '''
-        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
-
 
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
         self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size, sample_rate=100.0)
         self.fourier_basis_bank = FourierFilterBank(self.num_fourier_basis, self.prototype_kernel_size,
                                                     sample_rate=100.0)
+
         self.num_learnable_basis = 10
         self.learnable_basis_bank = nn.Parameter(torch.randn(self.num_learnable_basis, 1, self.prototype_kernel_size))
         nn.init.xavier_uniform_(self.learnable_basis_bank)
 
         num_total_basis = self.num_gabor_basis + self.num_fourier_basis + self.num_learnable_basis
-        self.mixing_weights = nn.Parameter(torch.randn(self.num_composite_prototypes, num_total_basis) * 0.01)
+
+        # 核心改动：增加特征通道维度，使用 3D 矩阵 [P, C, N] 保证每个通道组合出独立的波形
+        self.mixing_weights = nn.Parameter(
+            torch.randn(self.num_composite_prototypes, afr_reduced_cnn_size, num_total_basis) * 0.01
+        )
 
         with torch.no_grad():
-            self.mixing_weights[0:n_g, 0:self.num_gabor_basis].add_(0.1)
-            self.mixing_weights[n_g:n_g + n_f, self.num_gabor_basis:self.num_gabor_basis + self.num_fourier_basis].add_(
-                0.1)
-            self.mixing_weights[n_g + n_f:, self.num_gabor_basis + self.num_fourier_basis:].add_(0.1)
+            self.mixing_weights[0:n_g, :, 0:self.num_gabor_basis].add_(0.1)
+            self.mixing_weights[n_g:n_g + n_f, :,
+            self.num_gabor_basis:self.num_gabor_basis + self.num_fourier_basis].add_(0.1)
+            self.mixing_weights[n_g + n_f:, :, self.num_gabor_basis + self.num_fourier_basis:].add_(0.1)
 
         self.bn = nn.BatchNorm1d(self.num_composite_prototypes)
         self.fc = nn.Linear(self.num_composite_prototypes, num_classes)
         self.min_distance, self.min_indices = None, None
 
     def forward(self, x, return_indices=False):
-        # print('x shape: ', x.shape)
-        # x = self.stem(x)
         features = self.feature_extractor(x)
         features = self.tcn_layer(features)
         C = features.shape[1]
-        # print('features shape: ', features.shape)
+
         self.current_gabor_k = self.gabor_basis_bank.get_kernels()
         self.current_fourier_k = self.fourier_basis_bank.get_kernels()
-        # print('gabor_k shape: ', self.current_gabor_k.shape)
-        # print('fourier_k shape: ', self.current_fourier_k.shape)
 
-        gabor_kernels = self.current_gabor_k.repeat(1, C, 1)
-        fourier_kernels = self.current_fourier_k.repeat(1, C, 1)
-        learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)
-        base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learn_kernels), dim=0)
+        # 核心改动：去掉原版破坏语义的 repeat，直接把 1 维基底合并 -> shape: [50, 1, 15]
+        # 然后 squeeze 移除多余通道维度 -> shape: [50, 15]
+        base_prototypes = torch.cat((self.current_gabor_k, self.current_fourier_k, self.learnable_basis_bank),
+                                    dim=0).squeeze(1)
 
-        composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
-        composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
+        # 核心改动：使用 Einsum 魔方进行带权重的线性融合
+        # mixing_weights: [P=50, C=128, N=50]
+        # base_prototypes: [N=50, L=15]
+        # 输出 composite_prototypes: [P=50, C=128, L=15]
+        composite_prototypes = torch.einsum('pcn, nl -> pcl', self.mixing_weights, base_prototypes)
 
         min_distance, min_indices = self.similarity_calculator(features, composite_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
@@ -776,7 +760,6 @@ class BuiltInProfiler:
             h.remove()
 
 
-'''
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -796,12 +779,13 @@ if __name__ == '__main__':
             config = json.load(config_file)
         config['name'] = os.path.basename(args.config).replace('.json', '')
     else:
+        # 修改点：将参数对齐到最新的 [50, 128, 15] 修正方案
         config = {
             'name': 'test_config',
             'classifier': {
                 'afr_reduced_dim': 128,
-                'prototype_shape': [1, 128, 50],
-                'prototype_num': 300,
+                'prototype_shape': [50, 128, 15],
+                'prototype_num': 50,
                 'num_classes': 5
             }
         }
@@ -828,7 +812,7 @@ if __name__ == '__main__':
     profiler.bwd_events.clear()
 
     print("[INFO] 正在进行真实耗时测试...")
-    x = torch.rand([8, 1, 30000]).cuda()
+    x = torch.rand([8, 1, 37500]).cuda()
     out = model(x)
     loss = out.sum()
     loss.backward()
@@ -839,44 +823,3 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
-
-'''
-import math
-import warnings
-import argparse
-import os
-import json
-import time
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-
-parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--seed', type=int, default=49, help='random seed')
-parser.add_argument('--gpu', type=str, default="0", help='gpu id')
-parser.add_argument('--config', type=str, help='config file path',
-                    default='./SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
-args = parser.parse_args()
-
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-
-with open(args.config) as config_file:
-    config = json.load(config_file)
-config['name'] = os.path.basename(args.config).replace('.json', '')
-config['mode'] = 'normal'
-
-
-model = ProtoPNet(config).cuda()
-
-total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"模型总参数量 (Total Trainable Params): {total_params} M")
-
-x = torch.rand([8, 1, 37500]).cuda()
-start = time.time()
-out = model(x)
-torch.cuda.synchronize()  # 确保 GPU 完成计算
-end = time.time()
-print("单次推理耗时: {:.4f} 秒".format(end - start))
-print(out, out.shape)
-'''

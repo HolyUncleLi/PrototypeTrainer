@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
 from models.ProtSleepNet_Fast import ProtoPNet
+# from models.protop import ProtoPNet
 
 warnings.filterwarnings("ignore")
 CLASS_WEIGHT = [1, 1.5, 1, 1, 1]

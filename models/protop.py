@@ -61,7 +61,7 @@ class ProtoPNet(nn.Module):
         p2 = self.prototype_vectors ** 2
         p2 = torch.sum(p2, dim=(1, 2))
         p2_reshape = p2.view(-1, 1)
-
+        print("proto shape: ", x.shape, self.prototype_vectors.shape)
         xp = F.conv1d(input=x, weight=self.prototype_vectors)
         distance = -2 * xp + p2_reshape + x2_patch_sum
         # distance = F.relu(x2_patch_sum + intermediate_result)
@@ -502,7 +502,7 @@ with open(args.config) as config_file:
 config['name'] = os.path.basename(args.config).replace('.json', '')
 config['mode'] = 'normal'
 model = ProtoPNet(config)
-x = torch.rand([64,1,30000])
+x = torch.rand([8,1,37500])
 out = model(x)
 print(out, out.shape)
 '''
