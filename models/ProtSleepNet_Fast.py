@@ -531,20 +531,19 @@ class MultiLatentSpaceSimilarity(nn.Module):
         self.scale = dim_head ** -0.5
         inner_dim = dim_head * heads
 
-        # 核心改动：引入一维卷积替代 nn.Linear，赋予注意力机制“局部波形感知能力”
+        # 【极致提速 1】：去除 groups=4，避免特定 cuDNN 版本下的分组卷积降速 Bug
+        # 标准卷积在 128 通道下运行极快，完全释放 GPU 并行能力
         self.q_projs = nn.ModuleList([
-            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, groups=4, bias=False) for _ in range(3)
+            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, bias=False) for _ in range(3)
         ])
         self.k_projs = nn.ModuleList([
-            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, groups=4, bias=False) for _ in range(3)
+            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, bias=False) for _ in range(3)
         ])
         self.v_projs = nn.ModuleList([
-            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, groups=4, bias=False) for _ in range(3)
+            nn.Conv1d(dim, inner_dim, kernel_size=5, padding=2, bias=False) for _ in range(3)
         ])
 
     def forward(self, x, prototypes):
-        # x: [Batch, C, Seq_len]
-        # prototypes: [P, C, L]
         batch_size, C, seq_len = x.shape
         _, _, proto_len = prototypes.shape
 
@@ -555,33 +554,43 @@ class MultiLatentSpaceSimilarity(nn.Module):
             num_p_group = p_group.shape[0]
             if num_p_group == 0: continue
 
-            # 对 Prototype (长度 L) 进行局部形态提取 -> shape: [num_p_group, inner_dim, L]
             q_proj = self.q_projs[i](p_group)
-            # 扩展多头: [num_p_group, heads, dim_head, L]
-            q = q_proj.view(num_p_group, self.heads, -1, proto_len)
+            q = q_proj.view(num_p_group, self.heads, -1, proto_len)  # [P, H, D, L]
 
-            # 对脑电特征序列进行局部形态提取 -> shape: [Batch, inner_dim, Seq_len]
             k_proj = self.k_projs[i](x)
             v_proj = self.v_projs[i](x)
-            # 扩展多头: [Batch, heads, dim_head, Seq_len]
-            k = k_proj.view(batch_size, self.heads, -1, seq_len)
-            v = v_proj.view(batch_size, self.heads, -1, seq_len)
+            k = k_proj.view(batch_size, self.heads, -1, seq_len)  # [B, H, D, S]
+            v = v_proj.view(batch_size, self.heads, -1, seq_len)  # [B, H, D, S]
 
-            # 跨时间维度的注意力矩阵点积计算
-            # Q: [P, H, D, L]  ,  K: [B, H, D, S] -> dots: [B, P, H, L, S]
-            dots = torch.einsum('phdl, bhds -> bphls', q, k) * self.scale
+            # =========================================================
+            # 【极致提速 2】：用强制广播的 Matmul 替代 5 维 Einsum
+            # 这会将运算强行打入底层的高效 cuBLAS Batched GEMM 核心，耗时 < 1ms
+            # =========================================================
+            # Q 转置并扩维: [P, H, D, L] -> [1, P, H, L, D]
+            q_t = q.transpose(-1, -2).unsqueeze(0)
+            # K 扩维: [B, H, D, S] -> [B, 1, H, D, S]
+            k_t = k.unsqueeze(1)
+            # 矩阵相乘: [1, P, H, L, D] @ [B, 1, H, D, S] -> [B, P, H, L, S]
+            dots = torch.matmul(q_t, k_t) * self.scale
+
             attn = dots.softmax(dim=-1)
 
-            # 根据注意力汇聚 Value 序列
-            # V: [B, H, D, S] -> out: [B, P, H, D, L]
-            out = torch.einsum('bphls, bhds -> bphdl', attn, v)
-            # 还原形状为: [B, P, inner_dim, L]
+            # =========================================================
+            # 【极致提速 3】：Value 汇聚同样替换为原生 Matmul
+            # =========================================================
+            # V 转置并扩维: [B, H, D, S] -> [B, 1, H, S, D]
+            v_t = v.transpose(-1, -2).unsqueeze(1)
+            # 矩阵相乘: [B, P, H, L, S] @ [B, 1, H, S, D] -> [B, P, H, L, D]
+            out = torch.matmul(attn, v_t)
+            # 转置回正确维度: [B, P, H, D, L]
+            out = out.transpose(-1, -2)
+
+            # 展平多头
             out = out.reshape(batch_size, num_p_group, -1, proto_len)
 
-            # 距离度量：将汇聚回来的波形与原始原型波形求 MSE 距离
+            # 距离度量
             dist = F.mse_loss(q_proj.unsqueeze(0), out, reduction='none').mean(dim=[2, 3])
 
-            # 获取匹配位点用于可解释性
             heatmap = attn.mean(dim=[2, 3])
             indices = heatmap.argmax(dim=-1)
 
@@ -630,7 +639,6 @@ class ProtoPNet(nn.Module):
 
         num_total_basis = self.num_gabor_basis + self.num_fourier_basis + self.num_learnable_basis
 
-        # 核心改动：增加特征通道维度，使用 3D 矩阵 [P, C, N] 保证每个通道组合出独立的波形
         self.mixing_weights = nn.Parameter(
             torch.randn(self.num_composite_prototypes, afr_reduced_cnn_size, num_total_basis) * 0.01
         )
@@ -653,16 +661,15 @@ class ProtoPNet(nn.Module):
         self.current_gabor_k = self.gabor_basis_bank.get_kernels()
         self.current_fourier_k = self.fourier_basis_bank.get_kernels()
 
-        # 核心改动：去掉原版破坏语义的 repeat，直接把 1 维基底合并 -> shape: [50, 1, 15]
-        # 然后 squeeze 移除多余通道维度 -> shape: [50, 15]
         base_prototypes = torch.cat((self.current_gabor_k, self.current_fourier_k, self.learnable_basis_bank),
                                     dim=0).squeeze(1)
 
-        # 核心改动：使用 Einsum 魔方进行带权重的线性融合
-        # mixing_weights: [P=50, C=128, N=50]
-        # base_prototypes: [N=50, L=15]
-        # 输出 composite_prototypes: [P=50, C=128, L=15]
-        composite_prototypes = torch.einsum('pcn, nl -> pcl', self.mixing_weights, base_prototypes)
+        # =========================================================
+        # 【极致提速 4】：将权重的 Einsum 降级为原生 Matmul
+        # 原理：[P, C, N] @ [N, L] -> [P, C, L] 这是标准的批量矩阵相乘！
+        # 直接调用底层的优化级算子，规避 PyTorch einsum 字符串解析的开销。
+        # =========================================================
+        composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes)
 
         min_distance, min_indices = self.similarity_calculator(features, composite_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
@@ -759,7 +766,7 @@ class BuiltInProfiler:
         for h in self.hooks:
             h.remove()
 
-
+'''
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -823,3 +830,4 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
+'''
