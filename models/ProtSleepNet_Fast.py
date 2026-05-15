@@ -160,13 +160,16 @@ class Block(nn.Module):
         self.norm = nn.BatchNorm1d(dmodel)
         self.se = SEBlock(in_dim=dmodel)
 
+        # convffn1
         self.ffn1pw1 = nn.Conv1d(in_channels=nvars * dmodel, out_channels=nvars * dff, kernel_size=1, stride=1,
                                  padding=0, dilation=1, groups=nvars)
+        # self.ffn1act1 = nn.GELU()
         self.ffn1act1 = nn.PReLU()
         self.ffn1norm1 = nn.BatchNorm1d(nvars * dff)
         self.ffn1pw2 = nn.Conv1d(in_channels=nvars * dff, out_channels=nvars * dmodel, kernel_size=1, stride=1,
                                  padding=0, dilation=1, groups=nvars)
         self.ffn1norm2 = nn.BatchNorm1d(nvars * dmodel)
+        # self.ffn1act2 = nn.GELU()
         self.ffn1act2 = nn.PReLU()
         self.ffn1drop1 = nn.Dropout(drop)
         self.ffn1drop2 = nn.Dropout(drop)
@@ -224,7 +227,7 @@ class ModernTCN(nn.Module):
         self.batchsize = 64
         self.seq_len = 10
         self.channeldim = 128
-        self.featuredim = 80
+        self.featuredim = 80  # seq len * 8
         self.embeddim = 80
         self.patch_size = 16
         self.patch_stride = 8
@@ -232,6 +235,7 @@ class ModernTCN(nn.Module):
         self.class_num = 5
         self.num_stage = 2
 
+        # stem layer & down sampling layers
         self.downsample_layers = nn.ModuleList()
         stem = nn.Sequential(
             nn.Conv1d(64, 64, kernel_size=16, stride=8),
@@ -244,6 +248,7 @@ class ModernTCN(nn.Module):
         )
         self.downsample_layers.append(downsample_layer)
 
+        # cnn backbone
         self.num_stage = 2
         self.stages = nn.ModuleList()
         layer = Stage(4, 1, 51, 5, dmodel=64, dw_model=64, nvars=1, small_kernel_merged=False, drop=0.1)
@@ -255,15 +260,18 @@ class ModernTCN(nn.Module):
         self.flatten = nn.Flatten()
 
     def forward_feature(self, x):
+        # x: [B, C, N]
         B, C, N = x.shape
 
-        x = x.unsqueeze(2)
-        x = x.reshape(B, 1, C, N)
+        # 把 C 合并到 D 维度
+        x = x.unsqueeze(2)  # [B, C, 1, N]
+        x = x.reshape(B, 1, C, N)  # [B, M=1, D=C, N]
         for i in range(self.num_stage):
             B, M, D, N = x.shape
             x = x.reshape(B * M, D, N)
             if i == 0:
                 if self.patch_size != self.patch_stride:
+                    # stem layer padding
                     pad_len = self.patch_size - self.patch_stride
                     pad = x[:, :, -1:].repeat(1, 1, pad_len)
                     x = torch.cat([x, pad], dim=-1)
@@ -280,7 +288,9 @@ class ModernTCN(nn.Module):
         return x
 
     def classification2(self, x, tags=None):
+        # lkcnn backbone
         x = self.forward_feature(x).squeeze()
+        # print("lksleepnet embed shape: ", x.shape)
         x = self.avgpool(x)
         return x
 
@@ -409,6 +419,7 @@ class LearnableGaborConv1d(nn.Module):
 
     def forward(self, x):
         w_real, w_imag = self.get_filter()
+        # [极限优化]: Stride=10, 序列 30000 -> 3000。耗时直接跌破 1ms
         out_real = F.conv1d(x, w_real, stride=1, padding=self.padding)
         out_imag = F.conv1d(x, w_imag, stride=1, padding=self.padding)
         magnitude = torch.sqrt(out_real.pow(2) + out_imag.pow(2) + 1e-8)
@@ -418,6 +429,22 @@ class LearnableGaborConv1d(nn.Module):
 class SemanticStream(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
+
+        '''
+        self.stem = nn.Sequential(
+            nn.Conv1d(in_channels, 256, kernel_size=15, stride=3, padding=7, bias=False),
+            nn.BatchNorm1d(256), nn.GELU(),
+            nn.MaxPool1d(kernel_size=5, stride=5)  # 序列 1000 -> 200
+        )
+
+        self.heavy_block = nn.Sequential(
+            nn.Conv1d(256, 384, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm1d(384), nn.GELU(),
+            nn.Conv1d(384, 384, kernel_size=5, padding=2, bias=False),
+            nn.BatchNorm1d(384), nn.GELU(),
+            nn.Conv1d(384, 128, kernel_size=1)
+        )
+        '''
         self.stem = nn.Sequential(
             nn.Conv1d(64, 64, kernel_size=31, stride=4, padding=15, bias=False),
             nn.BatchNorm1d(64), nn.GELU(),
@@ -430,17 +457,21 @@ class SemanticStream(nn.Module):
             input_channels=64, afr_reduced_cnn_size=128,
             block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
         )
+        # 固定尺寸为 194
         self.pool = nn.AdaptiveAvgPool1d(256)
 
     def forward(self, x):
+        # print('SemanticStream in shape: ', x.shape)
         x = self.stem(x)
         x = self.feature_extractor(x)
-        return x
+        # print('SemanticStream out shape: ', x.shape)
+        return x  # 输出 [B, 128, 194]
 
 
 class MorphologicalStream(nn.Module):
     def __init__(self, in_channels=64, out_channels=128):
         super().__init__()
+
         self.tcn = ModernTCN()
 
     def forward(self, x):
@@ -483,8 +514,42 @@ class LGWDS_Net(nn.Module):
 
 
 # ====================================================================
-# 【完全原样的】特征匹配与多潜空间相似度计算
+# 辅组模块 [保持原型]
 # ====================================================================
+class GaborFilterBank(nn.Module):
+    def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
+        super().__init__()
+        self.num, self.ks = num_filters, kernel_size
+        t = torch.linspace(-kernel_size // 2, kernel_size // 2, steps=kernel_size) / sample_rate
+        self.register_buffer('t', t)
+        self.A, self.mu, self.sigma = [nn.Parameter(p) for p in
+                                       [torch.ones(self.num), torch.zeros(self.num), torch.ones(self.num) * 0.1]]
+        self.f = nn.Parameter(torch.linspace(1.0, 40.0, num_filters) + torch.randn(num_filters) * 0.1)
+        self.phi = nn.Parameter(torch.zeros(self.num))
+
+    def get_kernels(self):
+        t = self.t.view(1, 1, -1)
+        A, mu, sigma, f, phi = [p.view(-1, 1, 1) for p in
+                                [self.A, self.mu, self.sigma.abs() + 1e-4, self.f.clamp(0.1, 50.0), self.phi]]
+        return A * torch.exp(-((t - mu) ** 2) / (2 * sigma ** 2)) * torch.cos(2 * torch.pi * f * t + phi)
+
+
+class FourierFilterBank(nn.Module):
+    def __init__(self, num_filters: int, kernel_size: int, sample_rate: float = 100.0):
+        super().__init__()
+        self.num, self.ks = num_filters, kernel_size
+        t = torch.linspace(-kernel_size // 2, kernel_size // 2, steps=kernel_size) / sample_rate
+        self.register_buffer('t', t)
+        self.A = nn.Parameter(torch.ones(self.num))
+        self.f = nn.Parameter(torch.linspace(1.0, 40.0, num_filters) + torch.randn(num_filters) * 0.5)
+        self.phi = nn.Parameter(torch.zeros(self.num))
+
+    def get_kernels(self):
+        t = self.t.view(1, 1, -1)
+        A, f, phi = [p.view(-1, 1, 1) for p in [self.A, self.f.clamp(0.1, 50.0), self.phi]]
+        return A * torch.cos(2 * torch.pi * f * t + phi)
+
+
 class MultiLatentSpaceSimilarity(nn.Module):
     def __init__(self, dim, splits, heads=4, dim_head=32):
         super().__init__()
@@ -532,28 +597,22 @@ class MultiLatentSpaceSimilarity(nn.Module):
         return torch.cat(all_distances, dim=1), torch.cat(all_indices, dim=1)
 
 
-# ====================================================================
-# 【彻底修复】直接初始化约束原型的 ProtoPNet (保持所有原始逻辑)
-# ====================================================================
 class ProtoPNet(nn.Module):
     def __init__(self, config):
         super(ProtoPNet, self).__init__()
         self.cfg = config
         afr_reduced_cnn_size = self.cfg['classifier']['afr_reduced_dim']
+        self.prototype_kernel_size = self.cfg['classifier']['prototype_shape'][2]
 
-        # 你的 fast 创新：读取 [50, 128, 15] 的模板大小
-        self.prototype_shape = self.cfg['classifier']['prototype_shape']
-        self.protop_num = self.prototype_shape[0]
-
-        n_g = self.protop_num // 3
-        n_f = self.protop_num // 3
-        n_l = self.protop_num - n_g - n_f
+        total_prototypes = self.cfg['classifier']['prototype_num']
+        n_g = total_prototypes // 3
+        n_f = total_prototypes // 3
+        n_l = total_prototypes - n_g - n_f
         self.proto_splits = [n_g, n_f, n_l]
-
+        self.num_composite_prototypes = total_prototypes
         num_classes = self.cfg['classifier']['num_classes']
 
         self.feature_extractor = LGWDS_Net(out_dim=afr_reduced_cnn_size)
-        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
         self.similarity_calculator = MultiLatentSpaceSimilarity(
             dim=afr_reduced_cnn_size,
@@ -561,53 +620,86 @@ class ProtoPNet(nn.Module):
             heads=4,
             dim_head=32
         )
+        '''
+        # 传统mrcnn方法
+        self.stem = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=31, stride=4, padding=15, bias=False),
+            nn.BatchNorm1d(32), nn.GELU(),
+            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
+            nn.Conv1d(32, 64, kernel_size=15, stride=2, padding=7, bias=False),
+            nn.BatchNorm1d(64), nn.GELU()
+        )
+        self.feature_extractor = EEGNetProto_Slim(
+            input_channels=64, afr_reduced_cnn_size=afr_reduced_cnn_size,
+            block=ResidualBlock, num_blocks=[2, 2, 2, 2], fixed_output_size=256
+        )
+        '''
+        self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
-        # -------------------------------------------------------------------
-        # 【修改核心点】：直接声明参数矩阵，但在底层用 Gabor 和 Fourier 物理约束初始化
-        # 去除了所有的 GaborFilterBank, FourierFilterBank 和 repeat 操作
-        # -------------------------------------------------------------------
-        self.prototype_vectors = nn.Parameter(torch.empty(self.prototype_shape), requires_grad=True)
-        self._initialize_constrained_prototypes(n_g, n_f, n_l)
+        self.num_gabor_basis, self.num_fourier_basis = 20, 20
+        self.num_learnable_basis = 10
 
-        self.bn = nn.BatchNorm1d(self.protop_num)
-        self.fc = nn.Linear(self.protop_num, num_classes)
-        self.min_distance, self.min_indices = None, None
+        # 【替换】：直接在物理约束下静态初始化 128 维度的复合模板
+        self.composite_prototypes = nn.Parameter(
+            torch.empty(self.num_composite_prototypes, afr_reduced_cnn_size, self.prototype_kernel_size),
+            requires_grad=True
+        )
 
-    def _initialize_constrained_prototypes(self, n_g, n_f, n_l):
-        """一次性构造出具有物理属性的 128x15 的随机初始波形，替代瞎随机"""
-        P, C, L = self.prototype_shape
         with torch.no_grad():
-            # 生成长度为 15 的时间轴，形状 [1, 1, 15]
-            t = torch.linspace(-1, 1, steps=L).view(1, 1, L)
+            # 生成长度为 prototype_kernel_size (15) 的时间步轴，用于物理公式
+            t = torch.linspace(-1, 1, steps=self.prototype_kernel_size).view(1, 1, self.prototype_kernel_size)
+            C = afr_reduced_cnn_size
 
-            # --- 1. Gabor 约束初始化 (前 n_g 个模板，带有起伏包络) ---
-            # 独立分配频率、相位、带宽，让 128 个通道各有不同
-            f_g = torch.empty(n_g, C, 1).uniform_(1.0, 10.0)
-            phi_g = torch.empty(n_g, C, 1).uniform_(0, 2 * math.pi)
-            sigma_g = torch.empty(n_g, C, 1).uniform_(0.2, 0.8)
+            # 1. 构造 128通道的 Gabor 约束原型
+            f_g = torch.empty(self.num_gabor_basis, C, 1).uniform_(1.0, 10.0)
+            phi_g = torch.empty(self.num_gabor_basis, C, 1).uniform_(0, 2 * math.pi)
+            sigma_g = torch.empty(self.num_gabor_basis, C, 1).uniform_(0.2, 0.8)
             gabor = torch.exp(-(t ** 2) / (2 * sigma_g ** 2)) * torch.cos(2 * math.pi * f_g * t + phi_g)
 
-            # --- 2. Fourier 约束初始化 (中间 n_f 个模板，纯频域波) ---
-            f_f = torch.empty(n_f, C, 1).uniform_(1.0, 10.0)
-            phi_f = torch.empty(n_f, C, 1).uniform_(0, 2 * math.pi)
+            # 2. 构造 128通道的 Fourier 约束原型
+            f_f = torch.empty(self.num_fourier_basis, C, 1).uniform_(1.0, 10.0)
+            phi_f = torch.empty(self.num_fourier_basis, C, 1).uniform_(0, 2 * math.pi)
             fourier = torch.cos(2 * math.pi * f_f * t + phi_f)
 
-            # --- 3. 自由学习特征 (剩余 n_l 个模板，微小随机噪声) ---
-            random_proto = torch.randn(n_l, C, L) * 0.1
+            # 3. 随机 Learnable 原型
+            random_proto = torch.randn(self.num_learnable_basis, C, self.prototype_kernel_size) * 0.1
 
-            # 将物理约束数据一次性赋予到需要梯度的参数矩阵中
-            self.prototype_vectors[:n_g] = gabor
-            self.prototype_vectors[n_g:n_g + n_f] = fourier
-            self.prototype_vectors[n_g + n_f:] = random_proto
+            # 赋予 parameter
+            self.composite_prototypes[:self.num_gabor_basis] = gabor
+            self.composite_prototypes[self.num_gabor_basis:self.num_gabor_basis + self.num_fourier_basis] = fourier
+            self.composite_prototypes[self.num_gabor_basis + self.num_fourier_basis:] = random_proto
+            # print("init gabor kernel: ", gabor.shape)
+            # print("init fourier kernel: ", fourier.shape)
+            # print("init rand kernel: ", random_proto.shape)
+
+
+        self.bn = nn.BatchNorm1d(self.num_composite_prototypes)
+        self.fc = nn.Linear(self.num_composite_prototypes, num_classes)
+        self.min_distance, self.min_indices = None, None
 
     def forward(self, x, return_indices=False):
+        # print('x shape: ', x.shape)
+        # x = self.stem(x)
         features = self.feature_extractor(x)
         features = self.tcn_layer(features)
+        C = features.shape[1]
+        # print('features shape: ', features.shape)
 
-        # -------------------------------------------------------------------
-        # 前向传播极度清爽：直接把具有 Gabor/Fourier 物理属性的 2D 模板送去 Attention
-        # -------------------------------------------------------------------
-        min_distance, min_indices = self.similarity_calculator(features, self.prototype_vectors)
+        # 【原逻辑注释，使用刚刚静态初始化的 composite_prototypes 替代计算】
+        # self.current_gabor_k = self.gabor_basis_bank.get_kernels()
+        # self.current_fourier_k = self.fourier_basis_bank.get_kernels()
+        # # print('gabor_k shape: ', self.current_gabor_k.shape)
+        # # print('fourier_k shape: ', self.current_fourier_k.shape)
+
+        # gabor_kernels = self.current_gabor_k.repeat(1, C, 1)
+        # fourier_kernels = self.current_fourier_k.repeat(1, C, 1)
+        # learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)
+        # base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learn_kernels), dim=0)
+
+        # composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
+        # composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
+
+        min_distance, min_indices = self.similarity_calculator(features, self.composite_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
 
         similarity = torch.log((self.min_distance + 1) / (self.min_distance + 1e-4))
@@ -634,7 +726,7 @@ class BuiltInProfiler:
             '2. Semantic_Stream': self.model.feature_extractor.semantic_stream,
             '3. Morph_Stream': self.model.feature_extractor.morph_stream,
             '4. Fusion_Pool': self.model.feature_extractor.fusion,
-            '5. Similarity_Attention': self.model.similarity_calculator,
+            '5. Similarity_Einsum': self.model.similarity_calculator,
             '6. Tcn model': self.model.tcn_layer,
             '7. Entire_ProtoPNet': self.model
         }
@@ -702,7 +794,7 @@ class BuiltInProfiler:
         for h in self.hooks:
             h.remove()
 
-'''
+
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -726,8 +818,8 @@ if __name__ == '__main__':
             'name': 'test_config',
             'classifier': {
                 'afr_reduced_dim': 128,
-                'prototype_shape': [50, 128, 15],
-                'prototype_num': 50,
+                'prototype_shape': [1, 128, 50],
+                'prototype_num': 300,
                 'num_classes': 5
             }
         }
@@ -739,13 +831,14 @@ if __name__ == '__main__':
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n==============================================")
     print(f"✅ 模型总参数量 (Total Trainable Params): {total_params / 1e6:.4f} M")
+    print(f"✅ 目标达成校验: {'通过!' if total_params >= 1.8e6 else '未达标!'} (要求 >= 1.8M)")
     print(f"==============================================\n")
 
     profiler = BuiltInProfiler(model)
     model.train()
 
     print("[INFO] 正在执行 Warmup 预热...")
-    x_warm = torch.rand([8, 1, 37500]).cuda()
+    x_warm = torch.rand([8, 1, 30000]).cuda()
     out_warm = model(x_warm)
     out_warm.sum().backward()
 
@@ -753,7 +846,7 @@ if __name__ == '__main__':
     profiler.bwd_events.clear()
 
     print("[INFO] 正在进行真实耗时测试...")
-    x = torch.rand([8, 1, 37500]).cuda()
+    x = torch.rand([8, 1, 30000]).cuda()
     out = model(x)
     loss = out.sum()
     loss.backward()
@@ -764,4 +857,3 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
