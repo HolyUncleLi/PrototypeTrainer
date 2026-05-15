@@ -434,13 +434,16 @@ class ProtoPNet(nn.Module):
         # print('features shape: ', features.shape)
         self.current_gabor_k = self.gabor_basis_bank.get_kernels()
         self.current_fourier_k = self.fourier_basis_bank.get_kernels()
-        # print('gabor_k shape: ', self.current_gabor_k.shape)
-        # print('fourier_k shape: ', self.current_fourier_k.shape)
+        print('gabor_k shape: ', self.current_gabor_k.shape)
+        print('fourier_k shape: ', self.current_fourier_k.shape)
 
         gabor_kernels = self.current_gabor_k.repeat(1, C, 1)
         fourier_kernels = self.current_fourier_k.repeat(1, C, 1)
         learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)
         base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learn_kernels), dim=0)
+        print("after gabor kernel: ", gabor_kernels.shape)
+        print("after fourier kernel: ", fourier_kernels.shape)
+        print("after learn kernel: ", learn_kernels.shape)
 
         composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
         composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
