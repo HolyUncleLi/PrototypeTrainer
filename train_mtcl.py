@@ -19,7 +19,8 @@ from torch.utils.data import DataLoader
 
 from utils import *
 from loader import EEGDataLoader
-from models.ProtSleepNet_Fast import ProtoPNet
+# from models.ProtSleepNet_Fast import ProtoPNet
+from models.ProtSleepNet_Fast_stable import ProtoPNet
 # from models.protop import ProtoPNet
 
 warnings.filterwarnings("ignore")
