@@ -89,7 +89,7 @@ class EEGDataLoader(Dataset):
         data_fname_dict = {'train': [], 'test': [], 'val': []}
         # data_fname_dict = {'train': [], 'test': []}
         split_idx_list = np.load(os.path.join('./split_idx', 'idx_{}.npy'.format(self.dset_name)), allow_pickle=True)
-        print(data_root)
+        # print(data_root)
         assert len(split_idx_list) == self.num_splits
 
         if self.dset_name == 'Sleep-EDF-2013':
@@ -113,15 +113,13 @@ class EEGDataLoader(Dataset):
 
         elif self.dset_name == 'MASS' or self.dset_name == 'Physio2018' or self.dset_name == 'SHHS':
             for i in range(len(data_fname_list)):
-                print('xxxx',self.fold,self.set)
-                print('xxxxx', i, split_idx_list[self.fold - 1][self.set])
-                print('xxxxxx', data_fname_list[i])
+                # print('xxxx',self.fold,self.set)
+                # print('xxxxx', i, split_idx_list[self.fold - 1][self.set])
+                # print('xxxxxx', data_fname_list[i])
                 data_fname_dict[self.set].append(data_fname_list[i])
 
         else:
             raise NameError("dataset '{}' cannot be found.".format(self.dataset))
-        print(111, self.set)
-        print(222, data_fname_dict[self.set])
         for data_fname in data_fname_dict[self.set]:
             npz_file = np.load(os.path.join(data_root, data_fname))
             inputs.append(npz_file['x'])
