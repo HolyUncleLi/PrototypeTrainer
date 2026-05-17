@@ -19,8 +19,8 @@ from torch.utils.data import DataLoader
 
 from utils import *
 from loader import EEGDataLoader
-# from models.ProtSleepNet_Fast import ProtoPNet
-from models.ProtSleepNet_Fast_stable import ProtoPNet
+from models.ProtSleepNet_Fast import ProtoPNet
+# from models.ProtSleepNet_Fast_stable import ProtoPNet
 # from models.protop import ProtoPNet
 
 warnings.filterwarnings("ignore")
@@ -129,79 +129,70 @@ class OneFoldTrainer:
 
     def compute_comprehensive_loss(self, outputs, labels):
         """
-        Reuse the comprehensive loss logic from train_mtcl_v4.
-        outputs: model logits (assumed shape [B, C])
-        labels: long tensor [B]
-        Returns: total_loss (scalar tensor), loss_components (dict of tensors)
+        匹配 ProtSleepNet_Fast 的定制化损失函数
         """
         loss_components = {}
         model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
-        # 1. Cls
+        # ==========================================
+        # 1. 交叉熵分类损失 (Classification)
+        # ==========================================
         loss_cls = self.criterion(outputs, labels)
-        loss_components['loss_cls'] = self.lambdas['cls'] * loss_cls
+        loss_components['loss_cls'] = self.lambdas.get('cls', 1.0) * loss_cls
 
-        # 2. Proto Related
-        # Expect model_module to expose min_distance, num_composite_prototypes, fc, mixing_weights, proto_splits,
-        # num_gabor_basis, num_fourier_basis, num_learnable_basis, learnable_basis_bank, current_gabor_k, current_fourier_k
-        min_dist = model_module.min_distance  # shape [B, num_prototypes] or [num_prototypes] depending on implementation
-        # If min_dist is per-sample, ensure shape [B, num_prototypes]; if global, expand
-        if min_dist.dim() == 1:
-            # expand to batch size
-            min_dist = min_dist.unsqueeze(0).repeat(outputs.size(0), 1)
-
-        num_prototypes = model_module.num_composite_prototypes
-        num_classes = model_module.fc.out_features
+        # ==========================================
+        # 2. 原型聚类与分离损失 (基于 1D Conv 相似度)
+        # ==========================================
+        # 注意：现在使用的是 max_sim，数值越大代表越匹配
+        sim = model_module.max_sim  # shape: [B, Proto_num]
+        num_prototypes = model_module.proto_num
+        num_classes = model_module.num_classes
         protos_per_class = num_prototypes // num_classes
 
-        # Build prototype-class identity matrix
+        # 构建 prototype-class 对齐掩码
         prototype_class_identity = torch.zeros(num_prototypes, num_classes, device=self.device)
         for j in range(num_classes):
             prototype_class_identity[j * protos_per_class: (j + 1) * protos_per_class, j] = 1.0
 
-        # class_mask: for each sample, which prototypes belong to its class -> shape [B, num_prototypes]
-        class_mask = prototype_class_identity.T[labels]  # shape [B, num_prototypes]
+        class_mask = prototype_class_identity.T[labels]  # shape: [B, Proto_num]
 
-        # inverted distances
-        inverted_dist = -min_dist  # higher means closer
+        # 聚类 (Clustering): 属于自己类别的原型，相似度越高越好
+        # 最大化 sim 等价于 最小化 -sim
+        max_sim_same_class = torch.max(sim + torch.log(class_mask + 1e-9), dim=1).values
+        loss_clst = torch.mean(-max_sim_same_class)
+        loss_components['loss_clst'] = self.lambdas.get('clst', 0.5) * loss_clst
 
-        # For same-class clustering: pick the max inverted distance among prototypes of same class
-        # add tiny log(class_mask) to mask out others
-        max_dist_same_class = torch.max(inverted_dist + torch.log(class_mask + 1e-9), dim=1).values
-        loss_clst = torch.mean(-max_dist_same_class)
-        loss_components['loss_clst'] = self.lambdas['clst'] * loss_clst
+        # 分离 (Separation): 不属于自己类别的原型，相似度越低越好
+        max_sim_diff_class = torch.max(sim + torch.log(1.0 - class_mask + 1e-9), dim=1).values
+        loss_sep = torch.mean(max_sim_diff_class)
+        loss_components['loss_sep'] = self.lambdas.get('sep', 0.1) * loss_sep
 
-        # For separation: pick max inverted distance among prototypes of different classes
-        max_dist_diff_class = torch.max(inverted_dist + torch.log(1.0 - class_mask + 1e-9), dim=1).values
-        loss_sep = torch.mean(max_dist_diff_class)
-        loss_components['loss_sep'] = self.lambdas['sep'] * loss_sep
+        # ==========================================
+        # 3. 先验结构稀疏损失 (L1 Sparsity)
+        # ==========================================
+        # 强迫模型稀疏地挑选 Gabor/Fourier 基底，防止退化成噪声
+        weights = model_module.mixing_weights  # shape: [Proto_num, C_dim, total_bases]
+        loss_sparse = torch.mean(torch.abs(weights))
+        loss_components['loss_sparse'] = self.lambdas.get('structure', 1.0) * loss_sparse
 
-        # 3. Regularization: structure mask on mixing weights
-        weights = model_module.mixing_weights  # expected shape [num_prototypes, total_basis]
-        splits = model_module.proto_splits  # list of row splits
-        basis_counts = [model_module.num_gabor_basis, model_module.num_fourier_basis, model_module.num_learnable_basis]
+        # ==========================================
+        # 4. 基底正交损失 (Orthogonality)
+        # ==========================================
+        # 强迫 Learnable 基底学到和固定物理模板正交的未知形态
+        l_bank = model_module.learnable_bank.flatten(1)  # [num_l, K]
+        fixed_bank = torch.cat([
+            model_module.gabor_bank.get_kernels().flatten(1).detach(),
+            model_module.fourier_bank.get_kernels().flatten(1).detach()
+        ], dim=0)  # [num_g + num_f, K]
 
-        struc_mask = torch.ones_like(weights)
-        row_s, col_s = 0, 0
-        for r_c, c_c in zip(splits, basis_counts):
-            struc_mask[row_s:row_s + r_c, col_s:col_s + c_c] = 0.0
-            row_s += r_c
-            col_s += c_c
-        loss_struc = torch.mean(torch.abs(weights) * struc_mask)
-        loss_components['loss_struc'] = self.lambdas['structure'] * loss_struc
+        # 计算余弦相似度并惩罚
+        l_norm = F.normalize(l_bank, p=2, dim=1)
+        f_norm = F.normalize(fixed_bank, p=2, dim=1)
+        orth_sim = torch.mm(l_norm, f_norm.t())
+        loss_orth = torch.mean(orth_sim ** 2)
+        loss_components['loss_orth'] = self.lambdas.get('orth', 0.1) * loss_orth
 
-        # Orthogonality between learnable basis and fixed kernels
-        learnable_k = model_module.learnable_basis_bank.flatten(1)  # [num_learnable, kernel_len]
-        # reuse cached kernels if available
-        fixed_k = torch.cat([model_module.current_gabor_k.flatten(1).detach(),
-                             model_module.current_fourier_k.flatten(1).detach()], dim=0)
-
-        l_norm = F.normalize(learnable_k, p=2, dim=1)
-        f_norm = F.normalize(fixed_k, p=2, dim=1)
-        similarity = torch.mm(l_norm, f_norm.t())
-        loss_orth = torch.mean(similarity ** 2)
-        loss_components['loss_orth'] = self.lambdas['orth'] * loss_orth
-
+        # 汇总总损失
         total_loss = sum(loss_components.values())
         return total_loss, loss_components
 

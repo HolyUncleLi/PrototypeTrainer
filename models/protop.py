@@ -477,33 +477,153 @@ class SELayer(nn.Module):
         y = self.fc(y).view(b, c, 1)
         return x * y.expand_as(x)
 
-'''
+
 import warnings
 import argparse
 import os
 import json
 
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
+# ====================================================================
+# 2. 纯内置耗时分析工具 (Profiler)
+# ====================================================================
+class BuiltInProfiler:
+    def __init__(self, model):
+        self.model = model
+        self.fwd_events = {}
+        self.bwd_events = {}
+        self.fwd_times = {}
+        self.bwd_times = {}
+        self.hooks = []
 
-parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--seed', type=int, default=49, help='random seed')
-parser.add_argument('--gpu', type=str, default="0", help='gpu id')
-parser.add_argument('--config', type=str, help='config file path',
-                    default='./SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
-args = parser.parse_args()
+        target_modules = {
+            '7. Entire_ProtoPNet': self.model
+        }
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+        for name, mod in target_modules.items():
+            self._register_hooks(name, mod)
+
+    def _register_hooks(self, name, mod):
+        def fwd_pre(m, input):
+            start = torch.cuda.Event(enable_timing=True)
+            start.record()
+            self.fwd_events[name] = {'start': start}
+
+        def fwd_post(m, input, output):
+            end = torch.cuda.Event(enable_timing=True)
+            end.record()
+            self.fwd_events[name]['end'] = end
+
+        self.hooks.append(mod.register_forward_pre_hook(fwd_pre))
+        self.hooks.append(mod.register_forward_hook(fwd_post))
+
+        def bwd_pre(m, grad_output):
+            start = torch.cuda.Event(enable_timing=True)
+            start.record()
+            self.bwd_events[name] = {'start': start}
+
+        def bwd_post_full(m, grad_input, grad_output):
+            end = torch.cuda.Event(enable_timing=True)
+            end.record()
+            self.bwd_events[name]['end'] = end
+
+        try:
+            self.hooks.append(mod.register_full_backward_pre_hook(bwd_pre))
+            self.hooks.append(mod.register_full_backward_hook(bwd_post_full))
+        except AttributeError:
+            pass
+
+    def calculate_times(self):
+        torch.cuda.synchronize()
+        for name, events in self.fwd_events.items():
+            if 'start' in events and 'end' in events:
+                self.fwd_times[name] = events['start'].elapsed_time(events['end'])
+
+        for name, events in self.bwd_events.items():
+            if 'start' in events and 'end' in events:
+                self.bwd_times[name] = events['start'].elapsed_time(events['end'])
+
+    def print_report(self):
+        self.calculate_times()
+        print("\n" + "=" * 80)
+        print(f" 🚀 [极限 1ms 版本] 模型各模块耗时分析报告 (GPU Time, 单位: ms)")
+        print("=" * 80)
+        print(f"| {'Module Name':<25} | {'Forward (ms)':<15} | {'Backward (ms)':<15} | {'Total (ms)':<12} |")
+        print("-" * 80)
+
+        for name in sorted(self.fwd_times.keys()):
+            fwd_t = self.fwd_times.get(name, 0.0)
+            bwd_t = self.bwd_times.get(name, 0.0)
+            total_t = fwd_t + bwd_t
+            print(f"| {name:<25} | {fwd_t:<15.2f} | {bwd_t:<15.2f} | {total_t:<12.2f} |")
+
+        print("=" * 80 + "\n")
+
+    def remove_hooks(self):
+        for h in self.hooks:
+            h.remove()
 
 
-with open(args.config) as config_file:
-    config = json.load(config_file)
-config['name'] = os.path.basename(args.config).replace('.json', '')
-config['mode'] = 'normal'
-model = ProtoPNet(config)
-x = torch.rand([8,1,37500])
-out = model(x)
-print(out, out.shape)
-'''
+# ====================================================================
+# 3. 执行入口区
+# ====================================================================
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--seed', type=int, default=49, help='random seed')
+    parser.add_argument('--gpu', type=str, default="0", help='gpu id')
+    parser.add_argument('--config', type=str, help='config file path',
+                        default='./SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
+    args = parser.parse_args()
+
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+
+    if os.path.exists(args.config):
+        with open(args.config) as config_file:
+            config = json.load(config_file)
+        config['name'] = os.path.basename(args.config).replace('.json', '')
+    else:
+        config = {
+            'name': 'test_config',
+            'classifier': {
+                'afr_reduced_dim': 128,
+                'prototype_shape': [1, 128, 50],
+                'prototype_num': 300,
+                'num_classes': 5
+            }
+        }
+
+    config['mode'] = 'normal'
+
+    model = ProtoPNet(config).cuda()
+
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\n==============================================")
+    print(f"✅ 模型总参数量 (Total Trainable Params): {total_params / 1e6:.4f} M")
+    print(f"✅ 目标达成校验: {'通过!' if total_params >= 1.8e6 else '未达标!'} (要求 >= 1.8M)")
+    print(f"==============================================\n")
+
+    profiler = BuiltInProfiler(model)
+    model.train()
+
+    print("[INFO] 正在执行 Warmup 预热...")
+    x_warm = torch.rand([8, 1, 30000]).cuda()
+    out_warm = model(x_warm)
+    out_warm.sum().backward()
+
+    profiler.fwd_events.clear()
+    profiler.bwd_events.clear()
+
+    print("[INFO] 正在进行真实耗时测试...")
+    x = torch.rand([8, 1, 30000]).cuda()
+    out = model(x)
+    loss = out.sum()
+    loss.backward()
+
+    profiler.print_report()
+    profiler.remove_hooks()
+
+    print("\n[Your Output]:")
+    print(out)
+    print("Output Shape:", out.shape)
+
 

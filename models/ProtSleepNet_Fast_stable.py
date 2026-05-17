@@ -429,7 +429,9 @@ class ProtoPNet(nn.Module):
         # print('x shape: ', x.shape)
         # x = self.stem(x)
         features = self.feature_extractor(x)
+        print('cnn feature: ', features.shape)
         features = self.tcn_layer(features)
+        print('tcn feature: ', features.shape)
         C = features.shape[1]
         # print('features shape: ', features.shape)
         self.current_gabor_k = self.gabor_basis_bank.get_kernels()
