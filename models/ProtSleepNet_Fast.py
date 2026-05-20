@@ -673,6 +673,8 @@ class ProtoPNet(nn.Module):
         gabor_kernels = self.current_gabor_k.repeat(1, C, 1)
         fourier_kernels = self.current_fourier_k.repeat(1, C, 1)
         learn_kernels = self.learnable_basis_bank.repeat(1, C, 1)
+        # print('gabor shape', gabor_kernels.shape)
+        # print('fourier shape', fourier_kernels.shape)
         base_prototypes = torch.cat((gabor_kernels, fourier_kernels, learn_kernels), dim=0)
 
         composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
@@ -756,7 +758,7 @@ class BuiltInProfiler:
     def print_report(self):
         self.calculate_times()
         print("\n" + "=" * 80)
-        print(f" 🚀 [极限 1ms 版本] 模型各模块耗时分析报告 (GPU Time, 单位: ms)")
+        print(f" 模型各模块耗时分析报告 (GPU Time, 单位: ms)")
         print("=" * 80)
         print(f"| {'Module Name':<25} | {'Forward (ms)':<15} | {'Backward (ms)':<15} | {'Total (ms)':<12} |")
         print("-" * 80)
@@ -774,7 +776,7 @@ class BuiltInProfiler:
             h.remove()
 
 
-'''
+
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -810,14 +812,13 @@ if __name__ == '__main__':
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n==============================================")
-    print(f"✅ 模型总参数量 (Total Trainable Params): {total_params / 1e6:.4f} M")
-    print(f"✅ 目标达成校验: {'通过!' if total_params >= 1.8e6 else '未达标!'} (要求 >= 1.8M)")
+    print(f"模型总参数量 (Total Trainable Params): {total_params / 1e6:.4f} M")
     print(f"==============================================\n")
 
     profiler = BuiltInProfiler(model)
     model.train()
 
-    print("[INFO] 正在执行 Warmup 预热...")
+    print("[INFO] 模型预热...")
     x_warm = torch.rand([8, 1, 30000]).cuda()
     out_warm = model(x_warm)
     out_warm.sum().backward()
@@ -837,7 +838,7 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
+
 
 '''
 import math
