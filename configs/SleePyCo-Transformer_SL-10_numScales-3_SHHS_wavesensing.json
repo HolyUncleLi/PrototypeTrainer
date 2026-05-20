@@ -22,7 +22,7 @@
 
     "classifier": {
         "name": "ProtoP",
-        "prototype_shape": [50, 128, 15],
+        "prototype_shape": [20, 128, 15],
         "feedforward_dim": 64,
         "block_num": 6,  
         "channel_num": 128,  
