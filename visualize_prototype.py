@@ -52,7 +52,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
     with torch.no_grad():
         for inputs, _ in data_loader:
             inputs = inputs.to(device)
-            # 【修正点 2】：强制使用解包后的 model_to_access 进行前向传播，
+            # 强制使用解包后的 model_to_access 进行前向传播，
             # 防止 DataParallel 吞掉 forward 内部保存的 self.min_distance 属性
             _ = model_to_access(inputs)
 
@@ -82,7 +82,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
 
     print("Step 3: Creating and laying out the figure...")
     # 动态调整画图尺寸，避免原型过多导致图片崩溃
-    plot_num = min(num_prototypes, 20)  # 如果原型太多(如300个)，建议这里限制最多画前20个，否则内存溢出
+    plot_num = min(num_prototypes, 20)  # 建议这里限制最多画前20个，否则内存溢出
     fig = plt.figure(figsize=(15, 0.7 * plot_num))
     gs = gridspec.GridSpec(
         plot_num + 1, 4,
@@ -115,7 +115,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
 
         ax_wave1 = fig.add_subplot(gs[row_idx, 1])
         if 'signal_epoch' in best_matches[p_idx]:
-            # 【修正点 3】：移除了对 model_stem 的调用参数
+            # 移除对 model_stem 的调用参数
             wavelet = get_key_waveform_from_indices(
                 best_matches[p_idx]['signal_epoch'],
                 best_matches[p_idx]['activation_idx'],
@@ -157,7 +157,7 @@ def generate_publication_figure(model, data_loader, device, class_names, sample_
     # 保存结果，防止弹窗阻塞
     plt.savefig('./results/prototype_vis.svg', bbox_inches='tight')
     print("Saved Prototype Visualization to ./results/prototype_vis.svg")
-    # plt.show() # 如果在服务器上运行，建议注释掉 plt.show()
+    plt.show() # 如果在服务器上运行，建议注释掉 plt.show()
 
 
 def plot_mixing_weights_heatmap(model, device):

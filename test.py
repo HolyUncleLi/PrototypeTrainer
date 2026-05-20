@@ -13,7 +13,8 @@ from torch.utils.data import DataLoader
 from utils import *
 from loader import EEGDataLoader
 # from models.protop_gabor import ProtoPNet
-from models.ProtSleepNet_Fast import ProtoPNet
+# from models.ProtSleepNet_Fast import ProtoPNet
+from models.ProtSleepNet_Fast_stable import ProtoPNet
 warnings.filterwarnings("ignore")
 
 
@@ -135,9 +136,9 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--config', type=str, help='config file path',
-                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
+                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
                         # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2018_wavesensing.json',
-                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_SHHS_wavesensing.json',
+                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_SHHS_wavesensing.json',
                         )
     args = parser.parse_args()
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -173,7 +174,7 @@ def main():
         '''
 
         '''
-        # 原生版本，弃用
+        # 原生绘制代码，弃用
         from visualize_single_prototype import visualize_prototypes_final, explain_single_sample_final
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         visualize_prototypes_final(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)

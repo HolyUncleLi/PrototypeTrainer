@@ -621,7 +621,7 @@ class ProtoPNet(nn.Module):
             dim_head=32
         )
         '''
-        # 传统mrcnn方法
+        # 传统mrcnn
         self.stem = nn.Sequential(
             nn.Conv1d(1, 32, kernel_size=31, stride=4, padding=15, bias=False),
             nn.BatchNorm1d(32), nn.GELU(),
@@ -774,7 +774,7 @@ class BuiltInProfiler:
             h.remove()
 
 
-'''
+
 # ====================================================================
 # 3. 执行入口区
 # ====================================================================
@@ -837,7 +837,7 @@ if __name__ == '__main__':
     print("\n[Your Output]:")
     print(out)
     print("Output Shape:", out.shape)
-'''
+
 
 '''
 import math
