@@ -98,31 +98,26 @@ class OneFoldEvaluator:
         print(f'\nTest Results | Acc: {accuracy}% ({correct}/{total}) | MF1: {mf1}')
         return y_true, y_pred, mf1
 
-    def run(self):
-        print(f'\n[INFO] Evaluating Fold: {self.fold}')
+    def load_checkpoint(self):
+        """将权重加载逻辑分离出来，支持外部直接调用"""
         model_path = os.path.join(self.ckpt_path, self.ckpt_name)
-
         if not os.path.exists(model_path):
             print(f"[ERROR] Checkpoint not found at: {model_path}")
-            return np.array([]), np.array([]), 0.0
+            return False
 
-        # ====================================================================
-        # *** 步骤 2: 在这里替换加载逻辑 ***
-        # ====================================================================
-        # 原始的加载行 (将被替换)
-        # self.model.load_state_dict(torch.load(model_path))
-
-        # 修复后的加载逻辑
         state_dict = torch.load(model_path, map_location=self.device)
-        # 创建一个新的、空的 state_dict
         new_state_dict = OrderedDict()
-        # 遍历加载的 state_dict，移除 'module.' 前缀
         for k, v in state_dict.items():
-            name = k[7:] if k.startswith('module.') else k  # remove `module.`
+            name = k[7:] if k.startswith('module.') else k
             new_state_dict[name] = v
-        # 将修复后的 state_dict 加载到模型中
         self.model.load_state_dict(new_state_dict)
-        # ====================================================================
+        return True
+
+    def run(self):
+        print(f'\n[INFO] Evaluating Fold: {self.fold}')
+        # 调用加载权重的逻辑
+        if not self.load_checkpoint():
+            return np.array([]), np.array([]), 0.0
 
         y_true, y_pred, mf1 = self.evaluate(mode='test')
         print('')
@@ -156,7 +151,78 @@ def main():
     for fold in range(1, config['dataset']['num_splits'] + 1):
         evaluator = OneFoldEvaluator(args, fold, config)
 
-        '''评估模型'''
+        # ==================== 核心控制开关 ====================
+        FAST_PLOT_MODE = True  # 开启后：不进行模型评估指标计算，直接绘制
+
+        ONLY_CORRECT = True  # 只绘制预测正确的样本
+        GROUP_BY_TYPE = True  # 分别从 Gabor, Fourier, Learnable 各提取1个最大贡献模板
+        PATCH_WINDOW_SEC = 3.0  # 截取片段长度（秒）
+        # =====================================================
+
+        if FAST_PLOT_MODE:
+            if not evaluator.load_checkpoint():
+                continue
+
+            print(f"\n[INFO] 极速绘图模式开启 - 正在搜索 Fold {fold} 的匹配样本...")
+            from visualize_prototype import explain_single_sample_comprehensive
+            class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
+
+            found_classes = set()
+            dataset = evaluator.loader_dict['test'].dataset
+            evaluator.model.eval()
+
+            for idx in range(len(dataset)):
+                sample_tuple = dataset[idx]
+                x, y = sample_tuple
+                true_class = int(y.item() if isinstance(y, torch.Tensor) else y)
+
+                # 如果这个类别已经画过了，跳过继续找下一个类别
+                if true_class in found_classes:
+                    continue
+
+                # 极速单样本前向传播 (耗时极短)
+                with torch.no_grad():
+                    x_tensor = torch.as_tensor(x).clone().detach().float().to(evaluator.device)
+                    if x_tensor.dim() == 2:
+                        x_tensor = x_tensor.unsqueeze(0)
+                    elif x_tensor.dim() == 1:
+                        x_tensor = x_tensor.unsqueeze(0).unsqueeze(0)
+                    x_tensor = x_tensor.repeat(2, 1, 1)  # 绕过squeeze Bug
+
+                    logits = evaluator.model(x_tensor)
+                    pred_class = torch.argmax(logits[0:1], dim=1).item()
+
+                # 如果开启了 ONLY_CORRECT，预测错的不要
+                if ONLY_CORRECT and pred_class != true_class:
+                    continue
+
+                # 找到了该类别的优良样本，开始画图！
+                found_classes.add(true_class)
+                true_label_name = class_names[true_class]
+                print(f"[Plotting] 发现目标: [{true_label_name}] (Dataset Index: {idx}) -> 绘制中...")
+
+                explain_single_sample_comprehensive(
+                    model=evaluator.model,
+                    sample_tuple=sample_tuple,
+                    device=evaluator.device,
+                    class_names=class_names,
+                    sample_rate=100,
+                    group_by_type=GROUP_BY_TYPE,
+                    patch_window_sec=PATCH_WINDOW_SEC,
+                    save_name=f'single_sample_fold{fold}_{true_label_name}.svg'
+                )
+
+                # 集齐 5 个类别的召唤神龙，直接跳出循环！
+                if len(found_classes) == len(class_names):
+                    print(f"[INFO] Fold {fold} 的 5 种睡眠期单样本图全部绘制完毕！")
+                    break
+
+            # 极速绘图模式下，画完直接结束本 Fold，跳过耗时的 evaluator.run()
+            continue
+
+            # ====================================================================
+        # 常规指标评估逻辑 (只有当 FAST_PLOT_MODE = False 时才会执行到这里)
+        # ====================================================================
         y_true, y_pred, mf1 = evaluator.run()
         if y_true.size == 0:
             continue
@@ -164,44 +230,14 @@ def main():
         Y_pred = np.concatenate([Y_pred, y_pred])
         summarize_result(config, fold, Y_true, Y_pred)
 
+        '''绘制混淆矩阵'''
         cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
         '''绘制原型模板图像 & 混合矩阵热力图'''
-        '''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
         plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
-        '''
-
-        '''单样本综合特征解释绘图'''
-        '''
-        from visualize_prototype import explain_single_sample_comprehensive
-        class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-        # 挑选当前 Fold 测试集中的前 3 个样本绘制综合解释图
-        for i in range(3):
-            sample_tuple = evaluator.loader_dict['test'].dataset[i]
-            explain_single_sample_comprehensive(
-                model=evaluator.model,
-                sample_tuple=sample_tuple,
-                device=evaluator.device,
-                class_names=class_names,
-                sample_rate=100,  # 确保和你数据的采样率匹配
-                top_k=5,  # 提取贡献最大的前3个模板
-                save_name=f'single_sample_fold{fold}_{i}.svg'
-            )
-        '''
-
-
-        '''
-        # 原生绘制代码，弃用
-        from visualize_single_prototype import visualize_prototypes_final, explain_single_sample_final
-        class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
-        visualize_prototypes_final(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
-        for i in range(10):
-            single_sample, _ = evaluator.loader_dict['test'].dataset[i]
-            explain_single_sample_final(evaluator.model, single_sample, evaluator.device, class_names)
-        '''
 
     mean_cm = np.mean(cm, axis=0)
     cm_plot(mean_cm, './results/cm.svg')

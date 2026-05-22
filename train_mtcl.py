@@ -136,7 +136,7 @@ class OneFoldTrainer:
         loss_components = {}
         model_module = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
-        # 1. Cls
+        # 交叉熵损失
         loss_cls = self.criterion(outputs, labels)
         loss_components['loss_cls'] = self.lambdas['cls'] * loss_cls
 

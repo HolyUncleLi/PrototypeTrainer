@@ -12,7 +12,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-
 class SEBlock(nn.Module):
     def __init__(self, in_dim, reduction=16):
         super().__init__()
@@ -680,6 +679,7 @@ class ProtoPNet(nn.Module):
         composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
         composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
 
+        # 模板相似度计算
         min_distance, min_indices = self.similarity_calculator(features, composite_prototypes)
         self.min_distance, self.min_indices = min_distance, min_indices
 
