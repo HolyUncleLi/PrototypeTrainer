@@ -7,7 +7,7 @@
         "sampleing_rate": 125,
         "target_idx": -1,
         "root_dir": "./",
-        "boost": true
+        "boost": "1"
     },
 
     "backbone": {

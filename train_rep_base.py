@@ -158,7 +158,7 @@ class EKDTrainer:
             val_acc, val_mf1, val_loss = self.evaluate('val')
             print(f"Epoch {epoch} | Val ACC: {val_acc:.2f}% | Val MF1: {val_mf1:.2f} | Val Loss: {val_loss:.4f}")
 
-            # 根据验证集的 MF1 进行早停并保存当前最佳的【未重参数化多分支模型】
+            # 根据验证集的 MF1 进行早停并保存最佳模型
             self.early_stopping(val_mf1, val_loss, self.student_model)
             if self.early_stopping.early_stop:
                 print("[INFO] 本折训练早停结束。")
