@@ -206,7 +206,6 @@ def summarize_result(config, fold, y_true, y_pred, save=True, apply=0):
     n1pr = round(result_dict['1.0']['precision']*100, 1)
     n1re = round(result_dict['1.0']['recall']*100, 1)
     n1f1 = round(result_dict['1.0']['f1-score']*100, 1)
-
     if apply == "1":
         accuracy *= preboost
         macro_f1 *= preboost

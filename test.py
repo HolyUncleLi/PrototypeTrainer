@@ -79,7 +79,7 @@ class OneFoldEvaluator:
             inputs = inputs.to(self.device)
             labels = labels.view(-1).to(self.device)
 
-            # 核心：只进行前向传播
+            # 只进行前向传播
             outputs = self.model(inputs)
 
             predicted = torch.argmax(outputs, 1)
@@ -162,8 +162,8 @@ def main():
             continue
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
-        summarize_result(config, fold, Y_true, Y_pred, config['dataset']['boost'])
 
+        summarize_result(config, fold, Y_true, Y_pred, apply=config['dataset']['boost'])
         cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
         '''绘制原型模板图像 & 混合矩阵热力图 需要evaluator.run()先执行更新模型内的模板信息'''
