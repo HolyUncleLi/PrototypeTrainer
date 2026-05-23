@@ -263,7 +263,10 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--gpu', type=str, default="0")
     parser.add_argument('--config', type=str, help='config file path',
-                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json')
+                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
+                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2018_wavesensing.json',
+                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_SHHS_wavesensing.json'
+                        )
     parser.add_argument('--prune_ratio', type=float, default=0.2, help='剪枝比例')
     args = parser.parse_args()
 

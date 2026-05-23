@@ -162,11 +162,11 @@ def main():
             continue
         Y_true = np.concatenate([Y_true, y_true])
         Y_pred = np.concatenate([Y_pred, y_pred])
-        summarize_result(config, fold, Y_true, Y_pred)
+        summarize_result(config, fold, Y_true, Y_pred, config['dataset']['boost'])
 
         cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
-        '''绘制原型模板图像 & 混合矩阵热力图'''
+        '''绘制原型模板图像 & 混合矩阵热力图 需要evaluator.run()先执行更新模型内的模板信息'''
         '''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']

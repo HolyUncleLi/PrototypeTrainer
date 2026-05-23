@@ -549,6 +549,7 @@ class FourierFilterBank(nn.Module):
         return A * torch.cos(2 * torch.pi * f * t + phi)
 
 
+# 子空间相似度计算
 class MultiLatentSpaceSimilarity(nn.Module):
     def __init__(self, dim, splits, heads=4, dim_head=32):
         super().__init__()

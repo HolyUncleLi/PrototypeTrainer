@@ -79,7 +79,7 @@ class OneFoldEvaluator:
             inputs = inputs.to(self.device)
             labels = labels.view(-1).to(self.device)
 
-            # 核心：只进行前向传播
+            # 只进行前向传播
             outputs = self.model(inputs)
 
             predicted = torch.argmax(outputs, 1)
@@ -163,7 +163,7 @@ def main():
             if not evaluator.load_checkpoint():
                 continue
 
-            print(f"\n[INFO] 极速绘图模式开启 - 正在搜索 Fold {fold} 的匹配样本...")
+            print(f"\n[INFO] 绘图模式开启 - 正在搜索 Fold {fold} 的匹配样本...")
             from visualize_prototype import explain_single_sample_comprehensive
             class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
 
@@ -180,7 +180,7 @@ def main():
                 if true_class in found_classes:
                     continue
 
-                # 极速单样本前向传播 (耗时极短)
+                # 单样本前向传播
                 with torch.no_grad():
                     x_tensor = torch.as_tensor(x).clone().detach().float().to(evaluator.device)
                     if x_tensor.dim() == 2:
@@ -192,11 +192,10 @@ def main():
                     logits = evaluator.model(x_tensor)
                     pred_class = torch.argmax(logits[0:1], dim=1).item()
 
-                # 如果开启了 ONLY_CORRECT，预测错的不要
+                # 如果开启了 ONLY_CORRECT
                 if ONLY_CORRECT and pred_class != true_class:
                     continue
 
-                # 找到了该类别的优良样本，开始画图！
                 found_classes.add(true_class)
                 true_label_name = class_names[true_class]
                 print(f"[Plotting] 发现目标: [{true_label_name}] (Dataset Index: {idx}) -> 绘制中...")
@@ -212,16 +211,16 @@ def main():
                     save_name=f'single_sample_fold{fold}_{true_label_name}.svg'
                 )
 
-                # 集齐 5 个类别的召唤神龙，直接跳出循环！
+                # 集齐5个类别后跳出循环
                 if len(found_classes) == len(class_names):
                     print(f"[INFO] Fold {fold} 的 5 种睡眠期单样本图全部绘制完毕！")
                     break
 
-            # 极速绘图模式下，画完直接结束本 Fold，跳过耗时的 evaluator.run()
+            # 绘图模式下，画完直接结束，跳过 evaluator.run()
             continue
 
-            # ====================================================================
-        # 常规指标评估逻辑 (只有当 FAST_PLOT_MODE = False 时才会执行到这里)
+        # ====================================================================
+        # 常规指标评估逻辑 (仅 FAST_PLOT_MODE = False 时才会执行)
         # ====================================================================
         y_true, y_pred, mf1 = evaluator.run()
         if y_true.size == 0:
@@ -234,10 +233,12 @@ def main():
         cm.append(confusion_matrix(Y_true.astype(int), Y_pred.argmax(axis=1)))
 
         '''绘制原型模板图像 & 混合矩阵热力图'''
+        '''
         from visualize_prototype import generate_publication_figure, plot_mixing_weights_heatmap
         class_names = ['Wake', 'N1', 'N2', 'N3', 'REM']
         generate_publication_figure(evaluator.model, evaluator.loader_dict['test'], evaluator.device, class_names)
         plot_mixing_weights_heatmap(evaluator.model, evaluator.device)
+        '''
 
     mean_cm = np.mean(cm, axis=0)
     cm_plot(mean_cm, './results/cm.svg')

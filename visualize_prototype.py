@@ -11,6 +11,29 @@ import sys
 import os
 
 
+def get_key_waveform_from_indices(signal_epoch, activation_idx,
+                                  proto_kernel_size_in_feature_space, sample_rate):
+    """
+    【修正点 1】：不再依赖遍历 model.stem 来计算 stride。
+    针对 ProtSleepNet_Fast 架构，输入序列长 30000，特征层因 AdaptiveAvgPool1d 被固定为 256。
+    因此等效步长 (stride ratio) 就是 input_len / latent_len。
+    """
+    input_len = 30000
+    latent_len = 256
+    total_stride = input_len / latent_len
+
+    # 计算在原始 30000 长度信号中的起止索引
+    start_idx_in_signal = int(activation_idx * total_stride)
+    proto_len_in_signal = int(proto_kernel_size_in_feature_space * total_stride)
+    end_idx_in_signal = start_idx_in_signal + proto_len_in_signal
+
+    signal_np = signal_epoch.squeeze().cpu().numpy()
+    end_idx_in_signal = min(end_idx_in_signal, len(signal_np))
+
+    wavelet = signal_np[start_idx_in_signal: end_idx_in_signal]
+    return wavelet
+
+
 # 绘制原型模板支持程度图
 def generate_publication_figure(model, data_loader, device, class_names, sample_rate=100):
     print("\n--- Generating Final Publication Figure ---")
