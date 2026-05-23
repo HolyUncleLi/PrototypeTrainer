@@ -31,7 +31,7 @@
         "repeat_num": 3,  
         "strides_num": 1,  
         "afr_reduced_dim": 128,
-        "prototype_num": 20,
+        "prototype_num": 10,
         "feature_dim": 64,  
 
         "class_lambda": 50,
