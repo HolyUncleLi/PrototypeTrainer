@@ -6,7 +6,8 @@
         "seq_len": 10,
         "sampleing_rate": 125,
         "target_idx": -1,
-        "root_dir": "./"
+        "root_dir": "./",
+        "boost": true
     },
 
     "backbone": {
