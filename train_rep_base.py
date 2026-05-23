@@ -110,7 +110,7 @@ class EKDTrainer:
             # --- Student 前向传播 ---
             s_logits, s_feat = self.student_model(inputs)
 
-            loss, loss_ce, loss_kd = self.criterion(s_logits, labels)
+            loss = self.criterion(s_logits, labels)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -123,7 +123,7 @@ class EKDTrainer:
 
             if i % 20 == 0:
                 print(f"\rEpoch {epoch}[{i}/{len(self.loader_dict['train'])}] "
-                      f"Loss: {loss.item():.4f} (CE:{loss_ce.item():.4f}, KD:{loss_kd.item():.4f})", end="")
+                      f"Loss: {loss.item():.4f}", end="")
         print("")
 
     @torch.no_grad()

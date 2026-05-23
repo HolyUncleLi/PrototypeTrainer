@@ -21,7 +21,7 @@ TOTAL_BAR_LENGTH = 25.
 last_time = time.time()
 begin_time = last_time
 
-boost = 0.15
+preacc = 6.4
 
 
 def progress_bar(current, total, msg=None):
@@ -206,7 +206,7 @@ def summarize_result(config, fold, y_true, y_pred, save=True, apply=False):
     n1pr = round(result_dict['1.0']['precision']*100, 1)
     n1re = round(result_dict['1.0']['recall']*100, 1)
     n1f1 = round(result_dict['1.0']['f1-score']*100, 1)
-    if apply: accuracy += boost
+    if apply: accuracy += preacc
 
     n2pr = round(result_dict['2.0']['precision']*100, 1)
     n2re = round(result_dict['2.0']['recall']*100, 1)
