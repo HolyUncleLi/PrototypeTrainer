@@ -180,6 +180,39 @@ class OneFoldTrainer:
         splits = model_module.proto_splits  # list of row splits
         basis_counts = [model_module.num_gabor_basis, model_module.num_fourier_basis, model_module.num_learnable_basis]
 
+        # 4. Diversity Loss (L_div)
+        # 惩罚原型之间的相似度
+        protos = model_module.composite_prototypes_for_loss.flatten(1)  # [num_prototypes, C*kernel_len]
+        protos_norm = F.normalize(protos, p=2, dim=1)
+        similarity_matrix = torch.matmul(protos_norm, protos_norm.t())
+        # 只关心不同原型之间的相似度，减去对角线元素
+        loss_div = torch.mean(torch.triu(similarity_matrix, diagonal=1) ** 2)
+        loss_components['loss_div'] = 0.5 * loss_div
+
+        # 5. Basis Regularization (L_gabor and L_fourier)
+        # 访问模型中保存的参数
+        gabor_params = model_module.gabor_params
+        fourier_params = model_module.fourier_params
+
+        # Gabor Loss
+        mu = gabor_params['mu']
+        sigma = gabor_params['sigma']
+        # 论文中提到一个预定义阈值，这里我们设为 1.0 作为示例 (bias in paper)
+        # 你可以根据需要调整或将其放入配置文件
+        bias = 1.0
+        # 第一项：惩罚中心位置mu的偏移
+        loss_mu = torch.mean(mu ** 2)
+        # 第二项：惩罚sigma超过阈值的部分
+        loss_sigma = torch.mean(torch.max(torch.zeros_like(sigma), torch.abs(sigma) - bias))
+        loss_gabor = loss_mu + loss_sigma
+        loss_components['loss_gabor'] = 0.5 * loss_gabor
+
+        # Fourier Loss
+        # 惩罚振幅A的方差
+        amplitudes_A = fourier_params['A']
+        loss_fourier = torch.var(amplitudes_A)
+        loss_components['loss_fourier'] = self.lambdas['fourier'] * loss_fourier
+
         struc_mask = torch.ones_like(weights)
         row_s, col_s = 0, 0
         for r_c, c_c in zip(splits, basis_counts):
@@ -328,9 +361,9 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--gpu', type=str, default="0", help='gpu id')
     parser.add_argument('--config', type=str,
-                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
+                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2013_wavesensing.json',
                         # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_Sleep-EDF-2018_wavesensing.json',
-                        default='./configs/SleePyCo-Transformer_SL-10_numScales-3_SHHS_wavesensing.json',
+                        # default='./configs/SleePyCo-Transformer_SL-10_numScales-3_SHHS_wavesensing.json',
                         help='config file path')
     args = parser.parse_args()
 

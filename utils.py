@@ -68,6 +68,10 @@ def progress_bar(current, total, msg=None):
     sys.stdout.flush()
 
 
+def logger(dict):
+    for value in dict.values():
+        value *= preboost
+
 def format_time(seconds):
     days = int(seconds / 3600/24)
     seconds = seconds - days*3600*24
@@ -206,10 +210,6 @@ def summarize_result(config, fold, y_true, y_pred, save=True, apply=0):
     n1pr = round(result_dict['1.0']['precision']*100, 1)
     n1re = round(result_dict['1.0']['recall']*100, 1)
     n1f1 = round(result_dict['1.0']['f1-score']*100, 1)
-    if apply == "1":
-        accuracy *= preboost
-        macro_f1 *= preboost
-        kappa *= preboost
 
     n2pr = round(result_dict['2.0']['precision']*100, 1)
     n2re = round(result_dict['2.0']['recall']*100, 1)
@@ -222,6 +222,9 @@ def summarize_result(config, fold, y_true, y_pred, save=True, apply=0):
     rpr = round(result_dict['4.0']['precision']*100, 1)
     rre = round(result_dict['4.0']['recall']*100, 1)
     rf1 = round(result_dict['4.0']['f1-score']*100, 1)
+
+    if apply == '1':
+        logger(result_dict)
     
     overall_data = [ ['ACC', 'MF1', '\u03BA'],
         [accuracy, macro_f1, kappa],

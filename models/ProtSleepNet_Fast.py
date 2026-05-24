@@ -620,6 +620,7 @@ class ProtoPNet(nn.Module):
             heads=4,
             dim_head=32
         )
+
         '''
         # 传统mrcnn
         self.stem = nn.Sequential(
@@ -636,7 +637,6 @@ class ProtoPNet(nn.Module):
         '''
         self.tcn_layer = EnhancedTCN(input_dim=afr_reduced_cnn_size, num_levels=4)
 
-
         self.num_gabor_basis, self.num_fourier_basis = 20, 20
         self.gabor_basis_bank = GaborFilterBank(self.num_gabor_basis, self.prototype_kernel_size, sample_rate=100.0)
         self.fourier_basis_bank = FourierFilterBank(self.num_fourier_basis, self.prototype_kernel_size,
@@ -644,6 +644,16 @@ class ProtoPNet(nn.Module):
         self.num_learnable_basis = 10
         self.learnable_basis_bank = nn.Parameter(torch.randn(self.num_learnable_basis, 1, self.prototype_kernel_size))
         nn.init.xavier_uniform_(self.learnable_basis_bank)
+
+        # 外部访问
+        self.composite_prototypes_for_loss = False
+        self.gabor_params = {
+            'mu': self.gabor_basis_bank.mu,
+            'sigma': self.gabor_basis_bank.sigma,
+        }
+        self.fourier_params = {
+            'A': self.fourier_basis_bank.A
+        }
 
         num_total_basis = self.num_gabor_basis + self.num_fourier_basis + self.num_learnable_basis
         self.mixing_weights = nn.Parameter(torch.randn(self.num_composite_prototypes, num_total_basis) * 0.01)
@@ -679,6 +689,7 @@ class ProtoPNet(nn.Module):
 
         composite_prototypes = torch.matmul(self.mixing_weights, base_prototypes.flatten(1))
         composite_prototypes = composite_prototypes.view(self.num_composite_prototypes, C, self.prototype_kernel_size)
+        self.composite_prototypes_for_loss = composite_prototypes
 
         # 模板相似度计算
         min_distance, min_indices = self.similarity_calculator(features, composite_prototypes)
