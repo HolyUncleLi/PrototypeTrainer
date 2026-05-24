@@ -217,9 +217,8 @@ class RepSleepEvaluator:
         print(f"[阶段A - 重参数化前] Acc: {acc:.2f}%, MF1: {mf1:.2f}, Latency: {lat:.2f}ms, FLOPs: {flops:.2f}M")
 
         # ==========================================
-        # 阶段 B：重参数化后 (单分支部署态 - 无剪枝)
+        # 重参数化
         # ==========================================
-        # 强制将 threshold 设为极其小的负数，即只做结构折叠，不剪枝
         self.model.deploy_and_prune(prune_ratio=0.0)
 
         acc, mf1, kappa, c_f1, _,_ = self.evaluate_metrics()
@@ -231,7 +230,7 @@ class RepSleepEvaluator:
         print(f"[阶段B - 重参数化后] Acc: {acc:.2f}%, MF1: {mf1:.2f}, Latency: {lat:.2f}ms, FLOPs: {flops:.2f}M")
 
         # ==========================================
-        # 阶段 C：重参数化 + 物理剪枝后
+        # 重参数化 + 物理剪枝
         # ==========================================
         # 加载干净的权重重新开始，以免上面的折叠污染
         self.model = self.build_model()
@@ -241,7 +240,6 @@ class RepSleepEvaluator:
         acc, mf1, kappa, c_f1, y_true, y_pred_labels = self.evaluate_metrics()
         lat, flops, params = self.measure_latency_and_flops()
 
-        # 理论 FLOPs 扣减 (因为 Mask 是软剪枝，真实硬件测例需要手算下降率，这里模拟理论值)
         theoretical_flops = flops * (1 - prune_ratio)
         theoretical_params = params * (1 - prune_ratio)
 

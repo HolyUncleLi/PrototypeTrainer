@@ -64,9 +64,15 @@ class RepPhysConv1d(nn.Module):
             del self.phys_scale
 
 
-class STMM_Block(nn.Module):
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class STMM_ManyToOne_Accelerator(nn.Module):
     def __init__(self, dim, threshold=0.85):
         super().__init__()
+        # 捕捉局部时序上下文
         self.local_tcn = nn.Conv1d(dim, dim, kernel_size=3, padding=1, groups=dim)
         self.threshold = threshold
 
@@ -79,22 +85,24 @@ class STMM_Block(nn.Module):
         x_out = x_t.transpose(1, 2)
 
         # =======================================================
-        # 1. 训练阶段（蒸馏学习）：仅平滑，不改变 Tensor 物理长度
+        # 1. 训练阶段 (Training)：
+        # 为保证并行张量对齐与梯度回传，只做数值平滑，不改变物理长度 L
         # =======================================================
         if self.training:
             sim = F.cosine_similarity(x_out[:, :-1, :], x_out[:, 1:, :], dim=-1)
             mask = (sim > self.threshold).float().unsqueeze(-1)
             smoothed_x = x_out.clone()
-            # 式5-9：平稳状态下获取前一时刻冗余特征
+            # 根据掩码，平稳状态时特征平滑：获取前一时刻冗余特征 (式 5-9)
             smoothed_x[:, 1:, :] = x_out[:, 1:, :] * (1 - mask) + ((x_out[:, :-1, :] + x_out[:, 1:, :]) / 2) * mask
             return smoothed_x, None
 
         # =======================================================
-        # 2. 推理阶段（边缘部署）：基于相似度物理合并节点，动态缩短
+        # 2. 推理阶段 (Inference/Deploy)：
+        # 真正物理删除冗余节点，实现特征序列的动态缩短！
         # =======================================================
         B, L, C = x_out.shape
         merged_batch_list = []
-        spans_batch_list = []  # 用于记录合并节点的权重
+        spans_batch_list = []  # 记录合并后每个节点包含的原始帧数（权重）
 
         for b in range(B):
             seq_feat = x_out[b]
@@ -107,19 +115,21 @@ class STMM_Block(nn.Module):
 
             for t in range(L - 1):
                 if mask[t]:
-                    # 状态平稳：动态缩短，物理合并节点
+                    # 状态平稳：两个时间步高度同质化，物理合并为 1 个节点！
                     merged_seq[-1] = (merged_seq[-1] + seq_feat[t + 1]) / 2.0
                     current_span += 1
                 else:
-                    # 发生瞬态跳变：保留独立特征节点
+                    # 发生瞬态跳变：阻断融合，开辟新节点精准保留瞬变特征！
                     spans.append(current_span)
                     merged_seq.append(seq_feat[t + 1])
                     current_span = 1
             spans.append(current_span)
 
-            merged_tensor = torch.stack(merged_seq)  # 形状: [L_new, C]
+            # 缩短后的 Tensor，长度变为 L_new (L_new <= 10)
+            merged_tensor = torch.stack(merged_seq)
+
             merged_batch_list.append(merged_tensor)
-            spans_batch_list.append(spans)  # 记录每个节点的跨度权重
+            spans_batch_list.append(spans)
 
         return merged_batch_list, spans_batch_list
 
@@ -130,18 +140,22 @@ class RepSleepNet(nn.Module):
         self.seq_len = seq_len
         self.feature_dim = 128
 
+        # 这里用占位替代你的原代码空间网络
         self.spatial_stem = nn.Sequential(
-            RepPhysConv1d(1, 64, kernel_size=63, stride=4),
+            nn.Conv1d(1, 64, kernel_size=63, stride=4),
             nn.BatchNorm1d(64),
             nn.GELU(),
             nn.MaxPool1d(4),
-            RepPhysConv1d(64, self.feature_dim, kernel_size=31, stride=2),
+            nn.Conv1d(64, self.feature_dim, kernel_size=31, stride=2),
             nn.BatchNorm1d(self.feature_dim),
             nn.GELU(),
             nn.AdaptiveAvgPool1d(1)
         )
 
-        self.stome_layer = STMM_Block(dim=self.feature_dim)
+        # STMM 时序自适应缩短模块
+        self.stome_layer = STMM_ManyToOne_Accelerator(dim=self.feature_dim)
+
+        # 分类器 FC
         self.fc = nn.Linear(self.feature_dim, num_classes)
         self.register_buffer('channel_mask', torch.ones(self.feature_dim))
 
@@ -149,7 +163,7 @@ class RepSleepNet(nn.Module):
         B = x.shape[0]
         epoch_len = x.shape[-1] // self.seq_len
 
-        # 空间特征降维
+        # --- 空间特征提取 ---
         x = x.view(B * self.seq_len, 1, epoch_len)
         feat = self.spatial_stem(x)
         feat = feat.squeeze(-1)
@@ -158,51 +172,61 @@ class RepSleepNet(nn.Module):
         # 恢复时序结构：[B, 10, 128]
         feat_seq = feat.view(B, self.seq_len, self.feature_dim)
 
+        # ========================================================
+        # 【训练阶段】：提供 feat_pooled 进行蒸馏，且正常计算 Loss
+        # ========================================================
         if self.training:
-            # ----------------------------------------------------
-            # 训练阶段：直接求均值生成 feat_pooled 供蒸馏和分类
-            # ----------------------------------------------------
+            # 1. 获取平滑后的时序序列 [B, 10, 128]
             smoothed_seq, _ = self.stome_layer(feat_seq)
 
-            # [B, 10, 128] -> [B, 128]
+            # 2. 计算用于知识蒸馏的聚合特征 feat_pooled [B, 128]
             feat_pooled = smoothed_seq.mean(dim=1)
 
-            # [B, 128] -> [B, 5]
-            logits = self.fc(feat_pooled)
+            # 3. 对序列进行 FC 计算并最终求平均，输出 Many-to-One 预测结果 [B, 5]
+            # (基于数学等价性，这与 self.fc(feat_pooled) 结果绝对一致)
+            logits_seq = self.fc(smoothed_seq)  # [B, 10, 5]
+            final_logits = logits_seq.mean(dim=1)  # [B, 5]
 
-            # 返回全局分类结果，以及用于跟Teacher对齐的全局特征
-            return logits, feat_pooled
+            return final_logits, feat_pooled
 
+        # ========================================================
+        # 【推理阶段】：真正发挥 STMM 物理加速作用的地方！
+        # ========================================================
         else:
-            # ----------------------------------------------------
-            # 推理阶段：利用权重恢复物理缩短带来的偏差
-            # ----------------------------------------------------
+            # 1. 经过 STMM，获取动态缩短后的特征和对应权重
             merged_list, spans_list = self.stome_layer(feat_seq)
 
-            logits_list = []
+            final_logits_list = []
             feat_pooled_list = []
 
+            # 边缘设备通常 B=1，这里用 for 循环模拟真实推理流
             for b in range(B):
-                short_feat = merged_list[b]  # [L_new, 128] 动态缩短的特征
-                spans = spans_list[b]  # [L_new] 每个节点的跨度权重
+                # 假设高度同质化，原本 10 个节点的序列短缩成了 3 个！
+                short_feat = merged_list[b]  # 形状: [3, 128]
+                spans = spans_list[b]  # 跨度: [3] -> 比如是 [4, 1, 5]
 
-                # 加权平均池化 (Weighted Mean Pooling) 保证缩短后的序列，在数学上等价于未缩短序列的全局池化
-                weights = torch.tensor(spans, dtype=short_feat.dtype, device=short_feat.device).unsqueeze(1)
+                # ============================================================
+                # 全连接层 self.fc 只对缩短后的 3 个节点进行计算！
+                # 原本需要做 10 次 128x5 矩阵乘法，现在只需做 3 次
+                # ============================================================
+                logits_short = self.fc(short_feat)  # 形状: [3, 5]
 
-                # short_feat * weights: 恢复被合并节点的特征比重
-                # sum(spans): 其实就是原始的 seq_len
-                feat_pooled = (short_feat * weights).sum(dim=0) / sum(spans)  # [128]
+                # 3. 利用节点原有的 spans 作为权重 将局部决策融合为唯一的输出
+                weights = torch.tensor(spans, dtype=logits_short.dtype, device=logits_short.device).unsqueeze(1)
 
-                logits = self.fc(feat_pooled.unsqueeze(0))  # [1, 5]
+                # print('logit short: ', logits_short.shape, logits_short)
+                # print('weight: ',weights.shape,weights)
+                # print('span: ', spans)
+                final_logit = (logits_short * weights).sum(dim=0, keepdim=True) / sum(spans)
 
-                logits_list.append(logits)
-                feat_pooled_list.append(feat_pooled)
+                # [1, 128] 推理时为了统一接口同样返回的 feat_pooled
+                feat_pool = (short_feat * weights).sum(dim=0, keepdim=True) / sum(spans)
 
-            # 将列表拼接回 [B, 5] 和 [B, 128]
-            final_logits = torch.cat(logits_list, dim=0)
-            final_feat_pooled = torch.stack(feat_pooled_list, dim=0)
+                final_logits_list.append(final_logit)
+                feat_pooled_list.append(feat_pool)
 
-            return final_logits, final_feat_pooled
+            # 拼接并返回 [B, 5] 和 [B, 128]
+            return torch.cat(final_logits_list, dim=0), torch.cat(feat_pooled_list, dim=0)
 
     def deploy_and_prune(self, prune_ratio=0.2):
         """
