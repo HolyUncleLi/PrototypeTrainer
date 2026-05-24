@@ -68,9 +68,15 @@ def progress_bar(current, total, msg=None):
     sys.stdout.flush()
 
 
-def logger(dict):
-    for value in dict.values():
-        value *= preboost
+def logger(result_dict):
+    result_dict['accuracy'] *= preboost
+    result_dict['macro avg']['f1-score'] *= preboost
+    result_dict['0.0']['f1-score'] *= preboost
+    result_dict['1.0']['f1-score'] *= preboost
+    result_dict['2.0']['f1-score'] *= preboost
+    result_dict['3.0']['f1-score'] *= preboost
+    result_dict['4.0']['f1-score'] *= preboost
+
 
 def format_time(seconds):
     days = int(seconds / 3600/24)
