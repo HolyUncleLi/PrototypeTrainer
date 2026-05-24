@@ -151,13 +151,10 @@ def main():
     for fold in range(1, config['dataset']['num_splits'] + 1):
         evaluator = OneFoldEvaluator(args, fold, config)
 
-        # ==================== 核心控制开关 ====================
-        FAST_PLOT_MODE = True  # 开启后：不进行模型评估指标计算，直接绘制
-
-        ONLY_CORRECT = True  # 只绘制预测正确的样本
-        GROUP_BY_TYPE = True  # 分别从 Gabor, Fourier, Learnable 各提取1个最大贡献模板
-        PATCH_WINDOW_SEC = 3.0  # 截取片段长度（秒）
-        # =====================================================
+        FAST_PLOT_MODE = True
+        ONLY_CORRECT = True
+        GROUP_BY_TYPE = True  # Gabor, Fourier, Learnable 取最大贡献模板
+        PATCH_WINDOW_SEC = 3.0  # 截取片段长度
 
         if FAST_PLOT_MODE:
             if not evaluator.load_checkpoint():
@@ -198,7 +195,7 @@ def main():
 
                 found_classes.add(true_class)
                 true_label_name = class_names[true_class]
-                print(f"[Plotting] 发现目标: [{true_label_name}] (Dataset Index: {idx}) -> 绘制中...")
+                print(f"[Plotting] 目标: [{true_label_name}] (Dataset Index: {idx}) -> 绘制中...")
 
                 explain_single_sample_comprehensive(
                     model=evaluator.model,

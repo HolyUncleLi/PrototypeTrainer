@@ -202,14 +202,10 @@ class RepSleepNet(nn.Module):
             # 边缘设备通常 B=1，这里用 for 循环模拟真实推理流
             for b in range(B):
                 # 假设高度同质化，原本 10 个节点的序列短缩成了 3 个！
-                short_feat = merged_list[b]  # 形状: [3, 128]
-                spans = spans_list[b]  # 跨度: [3] -> 比如是 [4, 1, 5]
+                short_feat = merged_list[b]  # [3, 128]
+                spans = spans_list[b]  # 跨度[3] -> 比如是 such as [4, 1, 5]
 
-                # ============================================================
-                # 全连接层 self.fc 只对缩短后的 3 个节点进行计算！
-                # 原本需要做 10 次 128x5 矩阵乘法，现在只需做 3 次
-                # ============================================================
-                logits_short = self.fc(short_feat)  # 形状: [3, 5]
+                logits_short = self.fc(short_feat)  # [?, 5]
 
                 # 3. 利用节点原有的 spans 作为权重 将局部决策融合为唯一的输出
                 weights = torch.tensor(spans, dtype=logits_short.dtype, device=logits_short.device).unsqueeze(1)
@@ -225,7 +221,6 @@ class RepSleepNet(nn.Module):
                 final_logits_list.append(final_logit)
                 feat_pooled_list.append(feat_pool)
 
-            # 拼接并返回 [B, 5] 和 [B, 128]
             return torch.cat(final_logits_list, dim=0), torch.cat(feat_pooled_list, dim=0)
 
     def deploy_and_prune(self, prune_ratio=0.2):
@@ -243,7 +238,7 @@ class RepSleepNet(nn.Module):
         bn_layer = self.spatial_stem[5]
         gamma = bn_layer.weight.data.abs()
 
-        # 计算动态分位数阈值，强行剪掉最不重要的前 prune_ratio (如20%)
+        # 计算动态分位数阈值
         threshold = torch.quantile(gamma, prune_ratio)
 
         # 寻找存活的通道索引
