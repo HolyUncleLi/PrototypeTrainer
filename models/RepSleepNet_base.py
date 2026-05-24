@@ -64,64 +64,31 @@ class RepPhysConv1d(nn.Module):
             del self.phys_scale
 
 
-class STMM_Block(nn.Module):
+class SToMe_TemporalBlock(nn.Module):
     def __init__(self, dim, threshold=0.85):
         super().__init__()
         self.local_tcn = nn.Conv1d(dim, dim, kernel_size=3, padding=1, groups=dim)
         self.threshold = threshold
 
     def forward(self, x):
-        """
-        x shape: [B, L, C] -> e.g., [64, 10, 128]
-        """
         x_t = x.transpose(1, 2)
         x_t = F.gelu(self.local_tcn(x_t)) + x_t
         x_out = x_t.transpose(1, 2)
 
-        # =======================================================
-        # 1. 训练阶段（蒸馏学习）：仅平滑，不改变 Tensor 物理长度
-        # =======================================================
         if self.training:
-            sim = F.cosine_similarity(x_out[:, :-1, :], x_out[:, 1:, :], dim=-1)
-            mask = (sim > self.threshold).float().unsqueeze(-1)
-            smoothed_x = x_out.clone()
-            # 式5-9：平稳状态下获取前一时刻冗余特征
-            smoothed_x[:, 1:, :] = x_out[:, 1:, :] * (1 - mask) + ((x_out[:, :-1, :] + x_out[:, 1:, :]) / 2) * mask
-            return smoothed_x, None
+            return x_out
 
-        # =======================================================
-        # 2. 推理阶段（边缘部署）：基于相似度物理合并节点，动态缩短
-        # =======================================================
-        B, L, C = x_out.shape
-        merged_batch_list = []
-        spans_batch_list = []  # 用于记录合并节点的权重
-
-        for b in range(B):
-            seq_feat = x_out[b]
-            sim = F.cosine_similarity(seq_feat[:-1], seq_feat[1:], dim=-1)
-            mask = (sim > self.threshold).bool()
-
-            merged_seq = [seq_feat[0]]
-            current_span = 1
-            spans = []
-
-            for t in range(L - 1):
-                if mask[t]:
-                    # 状态平稳：动态缩短，物理合并节点
-                    merged_seq[-1] = (merged_seq[-1] + seq_feat[t + 1]) / 2.0
-                    current_span += 1
-                else:
-                    # 发生瞬态跳变：保留独立特征节点
-                    spans.append(current_span)
-                    merged_seq.append(seq_feat[t + 1])
-                    current_span = 1
-            spans.append(current_span)
-
-            merged_tensor = torch.stack(merged_seq)  # 形状: [L_new, C]
-            merged_batch_list.append(merged_tensor)
-            spans_batch_list.append(spans)  # 记录每个节点的跨度权重
-
-        return merged_batch_list, spans_batch_list
+        sim = F.cosine_similarity(x_out[:, :-1, :], x_out[:, 1:, :], dim=-1)
+        mask = (sim > self.threshold).float().unsqueeze(-1)
+        smoothed_x = x_out.clone()
+        smoothed_x[:, 1:, :] = x_out[:, 1:, :] * (1 - mask) + ((x_out[:, :-1, :] + x_out[:, 1:, :]) / 2) * mask
+        '''
+        print('x shape: ', x_out.shape)
+        print('sim shape: ', sim.shape)
+        print('mask shape: ', mask.shape)
+        print('smoothed x shape: ', smoothed_x.shape)
+        '''
+        return smoothed_x
 
 
 class RepSleepNet(nn.Module):
@@ -141,68 +108,36 @@ class RepSleepNet(nn.Module):
             nn.AdaptiveAvgPool1d(1)
         )
 
-        self.stome_layer = STMM_Block(dim=self.feature_dim)
+        self.stome_layer = SToMe_TemporalBlock(dim=self.feature_dim)
         self.fc = nn.Linear(self.feature_dim, num_classes)
         self.register_buffer('channel_mask', torch.ones(self.feature_dim))
 
     def forward(self, x):
+        print(x.shape)
         B = x.shape[0]
+        # 自动计算每个Epoch的长度，避免硬编码 3000
         epoch_len = x.shape[-1] // self.seq_len
 
-        # 空间特征降维
+        # 1. 拆分为[B, seq_len, epoch_len]
+        x = x.view(B, self.seq_len, epoch_len)
+        # 2. 融合成[B*seq_len, 1, epoch_len]
         x = x.view(B * self.seq_len, 1, epoch_len)
+
         feat = self.spatial_stem(x)
         feat = feat.squeeze(-1)
+
         feat = feat * self.channel_mask.view(1, -1)
 
-        # 恢复时序结构：[B, 10, 128]
         feat_seq = feat.view(B, self.seq_len, self.feature_dim)
+        feat_seq = self.stome_layer(feat_seq)
 
-        if self.training:
-            # ----------------------------------------------------
-            # 训练阶段：直接求均值生成 feat_pooled 供蒸馏和分类
-            # ----------------------------------------------------
-            smoothed_seq, _ = self.stome_layer(feat_seq)
+        # ========================================
+        # 聚合上下文序列帧 -> 获得整体特征
+        # ========================================
+        feat_pooled = feat_seq.mean(dim=1)  # 形状变为: [B, 128]
+        logits = self.fc(feat_pooled)  # 形状变为: [B, 5]
 
-            # [B, 10, 128] -> [B, 128]
-            feat_pooled = smoothed_seq.mean(dim=1)
-
-            # [B, 128] -> [B, 5]
-            logits = self.fc(feat_pooled)
-
-            # 返回全局分类结果，以及用于跟Teacher对齐的全局特征
-            return logits, feat_pooled
-
-        else:
-            # ----------------------------------------------------
-            # 推理阶段：利用权重恢复物理缩短带来的偏差
-            # ----------------------------------------------------
-            merged_list, spans_list = self.stome_layer(feat_seq)
-
-            logits_list = []
-            feat_pooled_list = []
-
-            for b in range(B):
-                short_feat = merged_list[b]  # [L_new, 128] 动态缩短的特征
-                spans = spans_list[b]  # [L_new] 每个节点的跨度权重
-
-                # 加权平均池化 (Weighted Mean Pooling) 保证缩短后的序列，在数学上等价于未缩短序列的全局池化
-                weights = torch.tensor(spans, dtype=short_feat.dtype, device=short_feat.device).unsqueeze(1)
-
-                # short_feat * weights: 恢复被合并节点的特征比重
-                # sum(spans): 其实就是原始的 seq_len
-                feat_pooled = (short_feat * weights).sum(dim=0) / sum(spans)  # [128]
-
-                logits = self.fc(feat_pooled.unsqueeze(0))  # [1, 5]
-
-                logits_list.append(logits)
-                feat_pooled_list.append(feat_pooled)
-
-            # 将列表拼接回 [B, 5] 和 [B, 128]
-            final_logits = torch.cat(logits_list, dim=0)
-            final_feat_pooled = torch.stack(feat_pooled_list, dim=0)
-
-            return final_logits, final_feat_pooled
+        return logits, feat_pooled
 
     def deploy_and_prune(self, prune_ratio=0.2):
         """

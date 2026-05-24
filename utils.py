@@ -21,7 +21,7 @@ TOTAL_BAR_LENGTH = 25.
 last_time = time.time()
 begin_time = last_time
 
-preboost = 1.085
+preboost = 1.3
 
 
 def progress_bar(current, total, msg=None):
