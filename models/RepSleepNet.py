@@ -86,7 +86,6 @@ class STMM_ManyToOne_Accelerator(nn.Module):
 
         # =======================================================
         # 1. 训练阶段 (Training)：
-        # 为保证并行张量对齐与梯度回传，只做数值平滑，不改变物理长度 L
         # =======================================================
         if self.training:
             sim = F.cosine_similarity(x_out[:, :-1, :], x_out[:, 1:, :], dim=-1)
@@ -98,11 +97,10 @@ class STMM_ManyToOne_Accelerator(nn.Module):
 
         # =======================================================
         # 2. 推理阶段 (Inference/Deploy)：
-        # 真正物理删除冗余节点，实现特征序列的动态缩短！
         # =======================================================
         B, L, C = x_out.shape
         merged_batch_list = []
-        spans_batch_list = []  # 记录合并后每个节点包含的原始帧数（权重）
+        spans_batch_list = []  # 记录合并后每个节点包含的原始帧数
 
         for b in range(B):
             seq_feat = x_out[b]
@@ -199,9 +197,7 @@ class RepSleepNet(nn.Module):
             final_logits_list = []
             feat_pooled_list = []
 
-            # 边缘设备通常 B=1，这里用 for 循环模拟真实推理流
             for b in range(B):
-                # 假设高度同质化，原本 10 个节点的序列短缩成了 3 个！
                 short_feat = merged_list[b]  # [3, 128]
                 spans = spans_list[b]  # 跨度[3] -> 比如是 such as [4, 1, 5]
 

@@ -18,8 +18,8 @@ from torch.utils.data import DataLoader
 from utils import set_random_seed, progress_bar
 from loader import EEGDataLoader
 
-# from models.RepSleepNet import RepSleepNet
-from models.RepSleepNet_base import RepSleepNet
+from models.RepSleepNet import RepSleepNet
+# from models.RepSleepNet_base import RepSleepNet
 warnings.filterwarnings("ignore")
 
 
@@ -98,7 +98,7 @@ class RepSleepEvaluator:
 
     def count_flops_and_params(self, model, input_size):
         """
-        手动统计 FLOPs 和参数量，不依赖第三方库
+        统计 FLOPs 和参数量
         input_size: tuple, e.g. (batch_size, channels, length)
         """
         flops = 0
@@ -142,7 +142,6 @@ class RepSleepEvaluator:
             elif isinstance(module, nn.ReLU):
                 flops += relu_flops(input_size)
             else:
-                # 其他层可按需扩展
                 params += sum(p.numel() for p in module.parameters())
 
         return flops / 1e6, params / 1e6  # 返回 M 单位

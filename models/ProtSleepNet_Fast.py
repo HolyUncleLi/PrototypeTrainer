@@ -399,8 +399,8 @@ class LearnableGaborConv1d(nn.Module):
         self.kernel_size = kernel_size
         self.padding = kernel_size // 2
 
-        self.mu_f = nn.Parameter(torch.rand(out_channels) * 30.0 + 0.5)
-        self.sigma = nn.Parameter(torch.ones(out_channels) * 10.0)
+        self.mu_f = nn.Parameter(torch.rand(out_channels) * 30.0 + 0.5)  # 中心频率 频带
+        self.sigma = nn.Parameter(torch.ones(out_channels) * 10.0)  # 高斯包络 分辨率
 
         t = torch.linspace(-(kernel_size // 2), kernel_size // 2, kernel_size) / sample_rate
         self.register_buffer('t', t)
@@ -418,7 +418,6 @@ class LearnableGaborConv1d(nn.Module):
 
     def forward(self, x):
         w_real, w_imag = self.get_filter()
-        # [极限优化]: Stride=10, 序列 30000 -> 3000。耗时直接跌破 1ms
         out_real = F.conv1d(x, w_real, stride=1, padding=self.padding)
         out_imag = F.conv1d(x, w_imag, stride=1, padding=self.padding)
         magnitude = torch.sqrt(out_real.pow(2) + out_imag.pow(2) + 1e-8)
@@ -583,13 +582,13 @@ class MultiLatentSpaceSimilarity(nn.Module):
             dots = torch.einsum('hpld,bhsd->bhpls', q, k) * self.scale
             attn = dots.softmax(dim=-1)
 
-            print('dots shape: ', dots.shape)
-            print('attn shape: ', attn.shape)
+            # print('dots shape: ', dots.shape)
+            # print('attn shape: ', attn.shape)
 
             out = torch.einsum('bhpls,bhsd->bhpld', attn, v)
-            print(out.shape)
+            # print(out.shape)
             out = out.permute(0, 2, 3, 1, 4).reshape(batch_size, num_p_group, proto_len, -1)
-            print(out.shape)
+            # print(out.shape)
 
             dist = F.mse_loss(q_proj.unsqueeze(0), out, reduction='none').mean(dim=[2, 3])
 
