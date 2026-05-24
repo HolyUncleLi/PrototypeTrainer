@@ -583,8 +583,13 @@ class MultiLatentSpaceSimilarity(nn.Module):
             dots = torch.einsum('hpld,bhsd->bhpls', q, k) * self.scale
             attn = dots.softmax(dim=-1)
 
+            print('dots shape: ', dots.shape)
+            print('attn shape: ', attn.shape)
+
             out = torch.einsum('bhpls,bhsd->bhpld', attn, v)
+            print(out.shape)
             out = out.permute(0, 2, 3, 1, 4).reshape(batch_size, num_p_group, proto_len, -1)
+            print(out.shape)
 
             dist = F.mse_loss(q_proj.unsqueeze(0), out, reduction='none').mean(dim=[2, 3])
 

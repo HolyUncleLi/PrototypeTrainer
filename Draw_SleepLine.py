@@ -10,7 +10,8 @@ from scipy.special import softmax
 import torch
 from utils import set_random_seed, progress_bar
 from loader import EEGDataLoader
-from models.ProtSleepNet_Fast import ProtoPNet
+# from models.ProtSleepNet_Fast import ProtoPNet
+from models.RepSleepNet_base import RepSleepNet
 
 warnings.filterwarnings("ignore")
 
@@ -26,10 +27,9 @@ def plot_hypnogram(y_true, y_pred, save_path=None):
     stages = ['W', 'N1', 'N2', 'N3', 'REM']
     epochs = np.arange(len(y_true))
 
-    # 创建上下两个子图，共享X轴
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
-    # --- 上半部分: 真实标签 ---
+    # --- 真实标签 ---
     ax1.step(epochs, y_true, color='blue', linewidth=1.5, where='post')
     ax1.set_yticks([0, 1, 2, 3, 4])
     ax1.set_yticklabels(stages)
@@ -39,11 +39,12 @@ def plot_hypnogram(y_true, y_pred, save_path=None):
     ax1.set_xticks(np.arange(0, len(epochs) + 1, 100))
     ax1.tick_params(axis='both', direction='out')
 
-    # --- 下半部分: 预测标签及错误点 ---
+    # --- 预测标签及错误点 ---
     ax2.step(epochs, y_pred, color='green', linewidth=1.5, where='post')
 
-    # 找出预测错误的点，画红色的 'x'
+    # 预测错误的点，画红色的 'x'
     error_indices = np.where(y_true != y_pred)[0]
+    print(y_true, y_pred.shape)
     ax2.scatter(error_indices, y_pred[error_indices], color='red', marker='x', s=20, zorder=3)
 
     ax2.set_yticks([0, 1, 2, 3, 4])
@@ -64,24 +65,21 @@ def plot_hypnogram(y_true, y_pred, save_path=None):
 
 def plot_sleep_probability(y_logits, save_path=None):
     """
-    绘制睡眠阶段概率变化图 (对应图2)
+    绘制睡眠阶段概率变化图
     """
-    # 将模型输出的 logits 转换为 [0, 1] 之间的概率
     y_probs = softmax(y_logits, axis=1)
     epochs = np.arange(y_probs.shape[0])
 
-    # 提取各个阶段的概率序列 (假设顺序为 W, N1, N2, N3, REM)
+    # 提取各个阶段的概率序列 (W, N1, N2, N3, REM)
     prob_W = y_probs[:, 0]
     prob_N1 = y_probs[:, 1]
     prob_N2 = y_probs[:, 2]
     prob_N3 = y_probs[:, 3]
     prob_REM = y_probs[:, 4]
 
-    # 尽量还原原图的 Viridis 渐变配色方案
     colors = ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725']
     labels = ['Wake', 'N1', 'N2', 'N3', 'REM']
 
-    # 设置支持中文的字体 (Windows常用SimHei，Mac常用Arial Unicode MS)
     plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS']
     plt.rcParams['axes.unicode_minus'] = False
 
@@ -119,9 +117,10 @@ def evaluate_single_night(args, config):
     print(f"[INFO] 使用设备: {device}")
 
     # 1. 实例化模型
-    model = ProtoPNet(config).to(device)
+    # model = ProtoPNet(config).to(device)
+    model = RepSleepNet().to(device)
 
-    # 2. 加载权重 (复用你 test.py 修复过的加载逻辑)
+    # 2. 加载权重
     ckpt_path = os.path.join('checkpoints', config['name'] + '_' + str(args.seed))
     ckpt_name = f'ckpt_fold-{args.fold:02d}.pth'
     model_path = os.path.join(ckpt_path, ckpt_name)
@@ -175,10 +174,12 @@ def evaluate_single_night(args, config):
             # 模型前向传播
             outputs = model(inputs)
 
+            print(len(outputs), outputs[0].shape, outputs[1].shape)
+
             y_true_list.append(label.item())
 
             # 此时 outputs 的 shape 是 [2, num_classes]，我们只取第 0 个的输出即可
-            y_logits_list.append(outputs.cpu().numpy()[0])
+            y_logits_list.append(outputs[0][0].cpu().numpy())
 
             if (i - start_idx) % 100 == 0 or (i == end_idx - 1):
                 progress_bar(i - start_idx, actual_epochs, "推理中...")
@@ -194,10 +195,6 @@ def evaluate_single_night(args, config):
     return y_true, y_pred, y_logits
 
 
-# ==========================================
-# 主函数
-# ==========================================
-
 def main():
     parser = argparse.ArgumentParser(description="绘制单人整晚睡眠分期图")
     parser.add_argument('--seed', type=int, default=42, help='random seed')
@@ -210,9 +207,9 @@ def main():
     parser.add_argument('--fold', type=int, default=1,
                         help='要读取哪个 Fold 的测试集模型和数据')
     parser.add_argument('--start_epoch', type=int, default=0,
-                        help='该受试者在测试集中的起始 Epoch 索引 (默认从第0个开始)')
+                        help='该受试者在测试集中的起始 Epoch 索引')
     parser.add_argument('--num_epochs', type=int, default=1050,
-                        help='该受试者一整晚的 Epoch 数量 (Sleep-EDF通常在 800-1200 之间)')
+                        help='该受试者一整晚的 Epoch 数')
     parser.add_argument('--save_dir', type=str, default='./Test/results/LineChart',
                         help='图片保存路径')
 
@@ -231,6 +228,7 @@ def main():
 
     # 1. 提取数据并推理
     y_true, y_pred, y_logits = evaluate_single_night(args, config)
+    print("====", y_true.shape, y_pred.shape, y_logits.shape)
 
     # 2. 绘制并保存图片
     hypno_path = os.path.join(args.save_dir, f'hypnogram_fold{args.fold}_start{args.start_epoch}.png')

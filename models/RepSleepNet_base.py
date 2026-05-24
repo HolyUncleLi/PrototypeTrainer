@@ -113,7 +113,7 @@ class RepSleepNet(nn.Module):
         self.register_buffer('channel_mask', torch.ones(self.feature_dim))
 
     def forward(self, x):
-        print(x.shape)
+
         B = x.shape[0]
         # 自动计算每个Epoch的长度，避免硬编码 3000
         epoch_len = x.shape[-1] // self.seq_len
@@ -132,7 +132,7 @@ class RepSleepNet(nn.Module):
         feat_seq = self.stome_layer(feat_seq)
 
         # ========================================
-        # 聚合上下文序列帧 -> 获得整体特征
+        # 聚合上下文特征
         # ========================================
         feat_pooled = feat_seq.mean(dim=1)  # 形状变为: [B, 128]
         logits = self.fc(feat_pooled)  # 形状变为: [B, 5]
