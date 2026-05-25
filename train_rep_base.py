@@ -190,7 +190,7 @@ def main():
 
     num_splits = config['dataset'].get('num_splits', 20)
 
-    for fold in range(11, num_splits + 1):
+    for fold in range(1, num_splits + 1):
     # for fold in range(1, 5):
         trainer = EKDTrainer(args, fold, config)
         trainer.run()
