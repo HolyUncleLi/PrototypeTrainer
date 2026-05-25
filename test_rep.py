@@ -18,8 +18,8 @@ from torch.utils.data import DataLoader
 from utils import set_random_seed, progress_bar
 from loader import EEGDataLoader
 
-from models.RepSleepNet import RepSleepNet
-# from models.RepSleepNet_base import RepSleepNet
+# from models.RepSleepNet import RepSleepNet
+from models.RepSleepNet_base import RepSleepNet
 warnings.filterwarnings("ignore")
 
 
